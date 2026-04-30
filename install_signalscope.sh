@@ -69,12 +69,20 @@ rq() {
   printf "\n=== %s ===\n" "$label" >> "$_LOG_FILE"
   if [[ "${DEBUG}" -eq 1 ]]; then
     step "$label"
-    eval "$cmd"
-    return
+    local rc=0
+    eval "$cmd" || rc=$?
+    if [[ $rc -ne 0 ]]; then
+      echo
+      err "Step failed (exit $rc): $label"
+      printf "  Full log: %s\n" "$_LOG_FILE"
+      echo
+      exit 1
+    fi
+    return 0
   fi
   _spin_start "$label"
-  eval "$cmd" >> "$_LOG_FILE" 2>&1
-  local rc=$?
+  local rc=0
+  eval "$cmd" >> "$_LOG_FILE" 2>&1 || rc=$?
   _spin_stop $rc "$label"
   if [[ $rc -ne 0 ]]; then
     echo
@@ -92,12 +100,14 @@ rq_opt() {
   printf "\n=== %s (optional) ===\n" "$label" >> "$_LOG_FILE"
   if [[ "${DEBUG}" -eq 1 ]]; then
     step "$label (optional)"
-    eval "$cmd" || { [[ -n "$wmsg" ]] && warn "$wmsg"; return 0; }
+    local rc=0
+    eval "$cmd" || rc=$?
+    [[ $rc -ne 0 && -n "$wmsg" ]] && warn "$wmsg"
     return 0
   fi
   _spin_start "$label"
-  eval "$cmd" >> "$_LOG_FILE" 2>&1
-  local rc=$?
+  local rc=0
+  eval "$cmd" >> "$_LOG_FILE" 2>&1 || rc=$?
   _spin_stop $rc "$label"
   [[ $rc -ne 0 && -n "$wmsg" ]] && warn "$wmsg"
   return 0
@@ -592,7 +602,7 @@ resolve_best_source() {
 
   _do_fetch() {
     if command -v git >/dev/null 2>&1; then
-      git clone --depth 1"${REPO_URL}" "${TEMP_SOURCE_DIR}" >/dev/null 2>&1 && { fetch_ok=1; return; } || true
+      git clone --depth 1 "${REPO_URL}" "${TEMP_SOURCE_DIR}" >/dev/null 2>&1 && { fetch_ok=1; return; } || true
     fi
     mkdir -p "${TEMP_SOURCE_DIR}"
     if curl -fsSL --max-time 30 "${RAW_BASE_URL}/${APP_PY_NAME}" -o "${remote_app}" 2>/dev/null; then
@@ -607,10 +617,10 @@ resolve_best_source() {
 
   if [[ "${DEBUG}" -eq 1 ]]; then
     step "Checking GitHub for latest version"
-    _do_fetch
+    _do_fetch || true
   else
     _spin_start "Checking GitHub for latest version"
-    _do_fetch >> "$_LOG_FILE" 2>&1
+    _do_fetch >> "$_LOG_FILE" 2>&1 || true
     _spin_stop 0 "Checked GitHub for latest version"
   fi
 
@@ -1126,7 +1136,18 @@ main() {
     section "UPDATE OPTIONS"
     info "Updating ${INSTALLED_VER} → ${WINNING_VER}"
 
-    [[ -z "${ENABLE_SERVICE}" ]] && ENABLE_SERVICE=0
+    if [[ -z "${ENABLE_SERVICE}" ]]; then
+      local _svc_default="n"
+      systemctl is-enabled --quiet "${SERVICE_NAME}" 2>/dev/null && _svc_default="y"
+      if ask_feature \
+          "Background service" \
+          "Reinstall/re-enable the systemd service, watchdog timer, and environment file." \
+          "$_svc_default"; then
+        ENABLE_SERVICE=1
+      else
+        ENABLE_SERVICE=0
+      fi
+    fi
 
     if [[ -z "${ENABLE_SDR}" ]]; then
       local _sdr_default="n"
@@ -1138,6 +1159,46 @@ main() {
         ENABLE_SDR=1
       else
         ENABLE_SDR=0
+      fi
+    fi
+
+    if [[ -z "${ENABLE_LIVEWIRE}" ]]; then
+      local _lw_default="n"
+      grep -q "Livewire" /etc/sysctl.d/99-signalscope-network.conf 2>/dev/null && _lw_default="y"
+      if ask_feature \
+          "Livewire / AES67 multicast inputs" \
+          "Re-apply large UDP kernel buffers for high-rate RTP multicast. Enables --retune." \
+          "$_lw_default"; then
+        ENABLE_LIVEWIRE=1
+        FORCE_RETUNE=1
+      else
+        ENABLE_LIVEWIRE=0
+      fi
+    fi
+
+    if [[ -z "${ENABLE_ICECAST}" ]]; then
+      local _ice_default="n"
+      dpkg -l icecast2 &>/dev/null && _ice_default="y"
+      if ask_feature \
+          "Icecast2" \
+          "Install or reinstall Icecast2 for the Icecast Streaming plugin." \
+          "$_ice_default"; then
+        ENABLE_ICECAST=1
+      else
+        ENABLE_ICECAST=0
+      fi
+    fi
+
+    if [[ -z "${ENABLE_NDI}" ]]; then
+      local _ndi_default="n"
+      "${INSTALL_ROOT}/venv/bin/python" -c "import ndi" &>/dev/null && _ndi_default="y"
+      if ask_feature \
+          "NDI support  (vMix Caller video preview)" \
+          "Install or reinstall ndi-python for the vMix Caller plugin." \
+          "$_ndi_default"; then
+        ENABLE_NDI=1
+      else
+        ENABLE_NDI=0
       fi
     fi
 
@@ -1362,6 +1423,14 @@ main() {
     fi
   fi
 
+  # ── Icecast2 (update / reinstall path) ───────────────────────────────────
+  if [[ "${IS_UPDATE}" -eq 1 && "${ENABLE_ICECAST}" == "1" ]]; then
+    rq_opt "Installing Icecast2" \
+      "echo 'icecast2 icecast2/icecast-setup boolean false' | ${SUDO} debconf-set-selections 2>/dev/null || true; \
+       DEBIAN_FRONTEND=noninteractive ${SUDO} apt-get install -y icecast2" \
+      "Icecast2 install failed — install later with: sudo apt install icecast2"
+  fi
+
   # ── Runtime packages (fresh + updates) ───────────────────────────────────
   if command -v apt-get &>/dev/null; then
     rq_opt "Ensuring libportaudio2 is installed" \
@@ -1418,6 +1487,18 @@ main() {
     done
     ${SUDO} chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_ROOT}/static"
     ok "Static assets downloaded"
+  fi
+
+  # ── plugins/ directory ────────────────────────────────────────────────────
+  # Always ensure the directory exists. Copy bundled plugins from source only
+  # on a fresh install or local/git source — on updates leave user-installed
+  # plugins in place (users manage plugins via Settings → Plugins).
+  ${SUDO} mkdir -p "${INSTALL_ROOT}/plugins"
+  ${SUDO} chown "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_ROOT}/plugins"
+  if [[ -d "${SOURCE_DIR}/plugins" && "${WINNING_SOURCE}" != "installed" && "${IS_UPDATE}" -ne 1 ]]; then
+    ${SUDO} rsync -a "${SOURCE_DIR}/plugins/" "${INSTALL_ROOT}/plugins/"
+    ${SUDO} chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_ROOT}/plugins"
+    ok "Plugins directory installed"
   fi
 
   # ── Python version check ──────────────────────────────────────────────────
@@ -1523,14 +1604,22 @@ EOF
     [[ -f "${PYBIN}" ]] && ${SUDO} setcap cap_net_bind_service=+ep "${PYBIN}" || true
 
     getent group plugdev >/dev/null 2>&1 && ${SUDO} usermod -aG plugdev "${SERVICE_USER}" || true
+  fi
 
+  # ── Environment file (always written — needed by service unit) ────────────
+  if [[ ! -f "/etc/default/${SERVICE_NAME}" || "${ENABLE_SERVICE}" == "1" ]]; then
     ${SUDO} tee /etc/default/${SERVICE_NAME} > /dev/null <<EOF
 SIGNALSCOPE_INSTALL_DIR=${INSTALL_ROOT}
 SIGNALSCOPE_DATA_DIR=${DATA_ROOT_DEFAULT}
 SIGNALSCOPE_LOG_DIR=${LOG_ROOT_DEFAULT}
 EOF
+  fi
 
-    [[ "${ENABLE_SERVICE}" == "1" ]] && create_service
+  # ── Service install / reinstall ───────────────────────────────────────────
+  # create_service runs on: fresh install with ENABLE_SERVICE=1, OR any run
+  # (fresh or update) where the user explicitly asked for ENABLE_SERVICE=1.
+  if [[ "${ENABLE_SERVICE}" == "1" ]]; then
+    create_service
   fi
 
   # ── Patch existing service file (usbfs fix on updates) ───────────────────
@@ -1569,23 +1658,35 @@ EOF
   write_logrotate
   ok "Log rotation configured (daily, 14-day retention)"
 
-  # ── Refresh watchdog ──────────────────────────────────────────────────────
-  if systemctl is-enabled --quiet "${SERVICE_NAME}" 2>/dev/null; then
+  # ── Watchdog — always written/updated when service is present ────────────
+  local _svc_enabled=0
+  systemctl is-enabled --quiet "${SERVICE_NAME}" 2>/dev/null && _svc_enabled=1 || true
+  if [[ "${_svc_enabled}" -eq 1 ]]; then
     write_watchdog
+    ${SUDO} chmod +x /usr/local/bin/${SERVICE_NAME}-watchdog.sh
     ${SUDO} systemctl daemon-reload
     ${SUDO} systemctl enable --now "${SERVICE_NAME}-watchdog.timer" 2>/dev/null || true
-    ok "Watchdog updated"
+    ok "Watchdog enabled"
   fi
 
-  # ── Restart service and health check ─────────────────────────────────────
-  if [[ "${IS_UPDATE}" -eq 1 && "${WINNING_SOURCE}" != "installed" ]]; then
-    if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
-      rq "Restarting service to apply update" "${SUDO} systemctl restart '${SERVICE_NAME}'"
-    elif systemctl is-enabled --quiet "${SERVICE_NAME}" 2>/dev/null; then
+  # ── Restart / start service ───────────────────────────────────────────────
+  # create_service already did enable --now when ENABLE_SERVICE=1.
+  # For updates where we did NOT call create_service, restart if running.
+  if [[ "${ENABLE_SERVICE}" != "1" && "${_svc_enabled}" -eq 1 ]]; then
+    if [[ "${WINNING_SOURCE}" != "installed" ]]; then
+      # New code was deployed — restart to pick it up
+      if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
+        rq "Restarting service to apply update" "${SUDO} systemctl restart '${SERVICE_NAME}'"
+      else
+        rq "Starting service" "${SUDO} systemctl start '${SERVICE_NAME}'"
+      fi
+    elif ! systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
+      # Service enabled but not running (e.g. after a crash) — start it
       rq "Starting service" "${SUDO} systemctl start '${SERVICE_NAME}'"
     fi
   fi
 
+  # ── Health check ──────────────────────────────────────────────────────────
   if systemctl is-enabled --quiet "${SERVICE_NAME}" 2>/dev/null; then
     verify_app_health || true
   fi
