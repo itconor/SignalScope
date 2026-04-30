@@ -17,13 +17,14 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/audiorouter",
     "icon":     "🔀",
     "hub_only": True,
-    "version":  "1.2.10",
+    "version":  "1.3.0",
 }
 
 import hashlib
 import hmac as _hmac
 import json
 import os
+import random
 import struct as _struct
 import subprocess
 import tempfile
@@ -70,6 +71,10 @@ _procs_lock = threading.Lock()
 # Active source PCM reader threads: route_id → threading.Thread
 _active_src_threads: dict = {}
 _src_threads_lock = threading.Lock()
+
+# Extra ffmpeg processes for fan-out routes: route_id → [proc, proc, ...]
+_active_extra_procs: dict = {}
+_extra_procs_lock = threading.Lock()
 
 # Active stream broadcasters on source clients: route_id → _StreamBroadcaster
 _active_broadcasters: dict = {}
@@ -447,6 +452,16 @@ def _stop_route_proc(route_id: str):
     with _src_threads_lock:
         _active_src_threads.pop(route_id, None)
 
+    with _extra_procs_lock:
+        extra_list = _active_extra_procs.pop(route_id, [])
+    for _ep in (extra_list or []):
+        if _ep and _ep.poll() is None:
+            try:
+                _ep.kill()
+                _ep.wait(timeout=5)
+            except Exception:
+                pass
+
 
 _CHUNK_DUR = 0.1          # seconds per PCM chunk (100 ms at 48 kHz / 9600 B stereo)
 _MIN_POLL_INTERVAL = 0.3  # minimum seconds between hub_chunks requests
@@ -625,6 +640,9 @@ code{font-family:monospace;font-size:12px;color:var(--mu)}
 .rcard-st{margin-top:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .rcard-err{margin-top:6px;font-size:11px;color:var(--al);background:#2a0a0a;border:1px solid #991b1b;border-radius:4px;padding:3px 7px}
 .via-tag{font-size:10px;background:#0d1e40;color:var(--mu);border:1px solid var(--bor);border-radius:999px;padding:1px 7px}
+.rmeter{height:4px;background:rgba(23,52,95,.5);border-radius:2px;margin-top:6px;overflow:hidden}
+.rmeter-fill{height:100%;background:var(--ok);border-radius:2px;transition:width .4s}
+.rmeter-fill.wn{background:var(--wn)}.rmeter-fill.al{background:var(--al)}
 </style>
 </head><body>
 {{topnav("audiorouter")|safe}}
@@ -708,6 +726,14 @@ code{font-family:monospace;font-size:12px;color:var(--mu)}
           </div>
         </div>
         <div id="uc-recv-hint" class="ts"></div>
+      </div>
+      <!-- Additional outputs (fan-out) -->
+      <div id="extra-dests-section" style="margin-bottom:12px">
+        <div style="font-size:11px;font-weight:600;color:var(--mu);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">
+          Additional Outputs <span style="font-size:10px;font-weight:400;text-transform:none">(fan-out — same dest site)</span>
+        </div>
+        <div id="extra-dests-list"></div>
+        <button type="button" class="btn bg bs" id="add-extra-dest-btn">＋ Add Output</button>
       </div>
       <button class="btn bp" id="add-route-btn">Add Route</button>
     </div>
@@ -813,6 +839,63 @@ document.getElementById('f-uc-port').addEventListener('input',function(){
 (function(){var p=parseInt(document.getElementById('f-uc-port').value||'5004',10);
   document.getElementById('uc-recv-hint').textContent='Receive in VLC/ffplay: rtp://@:'+p;})();
 
+// ── Fan-out: extra destinations ───────────────────────────────────────────────
+var _edList=document.getElementById('extra-dests-list');
+var _edInStyle='background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:5px 8px;font-size:12px';
+
+function _addExtraDest(){
+  var row=document.createElement('div');
+  row.className='extra-dest-row';
+  row.style.cssText='display:flex;gap:8px;align-items:flex-end;margin-bottom:8px;flex-wrap:wrap';
+  row.innerHTML=
+    '<select class="ed-type" style="'+_edInStyle+'">'
+      +'<option value="livewire">Livewire</option>'
+      +'<option value="rtp_unicast">Unicast RTP</option>'
+    +'</select>'
+    +'<div class="ed-lw-wrap" style="display:flex;gap:6px;align-items:center">'
+      +'<input type="number" class="ed-lw-id" min="1" max="65535" placeholder="LW ID" style="'+_edInStyle+';width:90px">'
+    +'</div>'
+    +'<div class="ed-uc-wrap" style="display:none;gap:6px;align-items:center">'
+      +'<input type="text" class="ed-uc-ip" placeholder="IP" style="'+_edInStyle+';width:130px">'
+      +'<input type="number" class="ed-uc-port" min="1" max="65535" value="5004" style="'+_edInStyle+';width:70px">'
+      +'<select class="ed-uc-codec" style="'+_edInStyle+'">'
+        +'<option value="pcm">PCM</option><option value="mp3">MP3</option><option value="aac">AAC</option>'
+      +'</select>'
+    +'</div>'
+    +'<button type="button" class="btn bd bs ed-remove-btn" data-action="remove-ed">✕</button>';
+  row.querySelector('.ed-type').addEventListener('change',function(){
+    var isUc=(this.value==='rtp_unicast');
+    row.querySelector('.ed-lw-wrap').style.display=isUc?'none':'flex';
+    row.querySelector('.ed-uc-wrap').style.display=isUc?'flex':'none';
+  });
+  _edList.appendChild(row);
+}
+
+document.getElementById('add-extra-dest-btn').addEventListener('click',_addExtraDest);
+
+_edList.addEventListener('click',function(e){
+  var rb=e.target.closest('.ed-remove-btn');
+  if(rb){rb.closest('.extra-dest-row').remove();}
+});
+
+function _collectExtraDests(){
+  var out=[];
+  _edList.querySelectorAll('.extra-dest-row').forEach(function(row){
+    var tp=row.querySelector('.ed-type').value;
+    if(tp==='rtp_unicast'){
+      var ip=(row.querySelector('.ed-uc-ip').value||'').trim();
+      var port=parseInt(row.querySelector('.ed-uc-port').value||'5004',10);
+      var codec=row.querySelector('.ed-uc-codec').value;
+      if(ip&&port>=1&&port<=65535)
+        out.push({type:'rtp_unicast',unicast_ip:ip,unicast_port:port,codec:codec});
+    } else {
+      var lw=parseInt(row.querySelector('.ed-lw-id').value||'0',10);
+      if(lw>=1&&lw<=65535) out.push({type:'livewire',lw_id:lw});
+    }
+  });
+  return out;
+}
+
 document.getElementById('add-route-btn').addEventListener('click',function(){
   var name=document.getElementById('f-name').value.trim();
   var srcSite=document.getElementById('f-src-site').value;
@@ -837,6 +920,8 @@ document.getElementById('add-route-btn').addEventListener('click',function(){
     if(!lwId||lwId<1||lwId>65535){_showMsg('Livewire Stream ID must be 1–65535.',true);return;}
     body.dest_lw_stream_id=lwId;
   }
+  var extraDests=_collectExtraDests();
+  if(extraDests.length) body.extra_destinations=extraDests;
   _post('/api/audiorouter/routes',body)
   .then(function(r){return r.json();})
   .then(function(d){
@@ -855,6 +940,7 @@ document.getElementById('add-route-btn').addEventListener('click',function(){
       document.getElementById('f-dest-type').value='livewire';
       document.getElementById('lw-section').style.display='';
       document.getElementById('uc-section').style.display='none';
+      _edList.innerHTML='';
       _refresh();
     } else {
       _showMsg('Error: '+(d.error||'unknown'),true);
@@ -869,6 +955,9 @@ function _overallBadge(r){
   if(st==='active')     return '<span class="badge b-ok">Active</span>';
   if(st==='error')      return '<span class="badge b-al">Error</span>';
   if(st==='connecting') return '<span class="badge b-wn">Connecting</span>';
+  var srcTs=(r.source_status&&r.source_status.ts)||0;
+  var dstTs=(r.dest_status&&r.dest_status.ts)||0;
+  if(!srcTs&&!dstTs)    return '<span class="badge b-wn">Starting…</span>';
   return '<span class="badge b-mu">Idle</span>';
 }
 
@@ -877,7 +966,8 @@ function _sideBadge(st){
   if(s==='active')     return '<span class="badge b-ok">Active</span>';
   if(s==='error')      return '<span class="badge b-al">Error</span>';
   if(s==='connecting') return '<span class="badge b-wn">Connecting</span>';
-  if(s==='idle')       return '<span class="badge b-mu">Idle</span>';
+  if(s==='idle')       return '<span class="badge b-mu">Stopped</span>';
+  if(!st||!st.ts)      return '<span class="badge b-mu">—</span>';
   return '<span class="badge b-mu">—</span>';
 }
 
@@ -921,6 +1011,13 @@ function _renderRoutes(routes){
           +'<div class="rcard-role">SOURCE</div>'
           +'<div class="rcard-site">Site: <strong>'+_esc(r.source_site)+'</strong></div>'
           +'<div class="rcard-stream">Stream: <strong>'+_esc(r.source_stream)+'</strong></div>'
+          +(function(){
+            var lev=(typeof r.source_level_dbfs==='number')?r.source_level_dbfs:null;
+            if(lev===null) return '';
+            var pct=Math.round(Math.max(0,Math.min(100,(lev+80)/80*100)));
+            var fc=pct<25?'al':pct<50?'wn':'';
+            return '<div class="rmeter"><div class="rmeter-fill '+fc+'" style="width:'+pct+'%"></div></div>';
+          })()
           +'<div class="rcard-st">'+_sideBadge(srcSt)+_timeAgo(srcSt.ts)+'</div>'
           +(srcErr?'<div class="rcard-err">⚠ '+_esc(srcErr)+'</div>':'')
         +'</div>'
@@ -1082,6 +1179,17 @@ def register(app, ctx):
             entry["error"]         = src_st.get("error", "") or dst_st.get("error", "")
             entry["source_status"] = src_st
             entry["dest_status"]   = dst_st
+            src_level = None
+            try:
+                if hub_server:
+                    _sdata = hub_server._sites.get(r.get("source_site", ""), {})
+                    for _st in _sdata.get("streams", []):
+                        if _st.get("name") == r.get("source_stream", ""):
+                            src_level = _st.get("level_dbfs")
+                            break
+            except Exception:
+                pass
+            entry["source_level_dbfs"] = src_level
             merged.append(entry)
         return jsonify({"routes": merged})
 
@@ -1142,6 +1250,41 @@ def register(app, ctx):
             except Exception:
                 return jsonify({"ok": False, "error": "dest_lw_stream_id must be 1–65535"}), 400
             route["dest_lw_stream_id"] = lw_id
+
+        if dest_type == "livewire":
+            with _cfg_lock:
+                _chk_cfg = _load_cfg()
+            for _er in _chk_cfg.get("routes", []):
+                if (_er.get("id") != route["id"]
+                        and _er.get("dest_site") == dest_site
+                        and _er.get("dest_type", "livewire") == "livewire"
+                        and int(_er.get("dest_lw_stream_id") or 0) == lw_id
+                        and _er.get("enabled", True)):
+                    return jsonify({
+                        "ok": False,
+                        "error": f"LW Stream ID {lw_id} is already used by route \"{_er.get('name')}\" on {dest_site}"
+                    }), 400
+
+        extra_dests = []
+        for _ed in (data.get("extra_destinations") or []):
+            _ed_type = str(_ed.get("type", "livewire")).strip()
+            if _ed_type == "rtp_unicast":
+                _ed_ip = str(_ed.get("unicast_ip", "")).strip()
+                _ed_port = int(_ed.get("unicast_port") or 5004)
+                _ed_codec = str(_ed.get("codec", "pcm")).strip()
+                if not _ed_ip or not (1 <= _ed_port <= 65535):
+                    continue
+                if _ed_codec not in ("pcm", "mp3", "aac"):
+                    _ed_codec = "pcm"
+                extra_dests.append({"type": "rtp_unicast", "unicast_ip": _ed_ip,
+                                     "unicast_port": _ed_port, "codec": _ed_codec})
+            else:
+                _ed_lw = int(_ed.get("lw_id") or 0)
+                if not (1 <= _ed_lw <= 65535):
+                    continue
+                extra_dests.append({"type": "livewire", "lw_id": _ed_lw})
+        if extra_dests:
+            route["extra_destinations"] = extra_dests
 
         # Create relay slot for cross-site routes
         if source_site != dest_site and enabled:
@@ -1548,7 +1691,7 @@ def register(app, ctx):
                     )
                 except Exception as e:
                     monitor.log(f"[AudioRouter] Poll cycle error: {e}")
-                time.sleep(8)
+                time.sleep(8 + random.uniform(0, 2))
 
         threading.Thread(
             target=_client_router_thread,
@@ -1830,9 +1973,23 @@ def _dest_output_args(route: dict) -> list[str]:
     return _ffmpeg_lw_output_args(_ffmpeg_rtp_url(lw_id))
 
 
+def _extra_dest_output_args(ed: dict) -> list[str]:
+    """Return ffmpeg output args for one extra destination dict."""
+    if ed.get("type") == "rtp_unicast":
+        return _ffmpeg_unicast_output_args(
+            str(ed.get("unicast_ip", "")),
+            int(ed.get("unicast_port") or 5004),
+            str(ed.get("codec", "pcm")),
+        )
+    lw_id = int(ed.get("lw_id") or 1)
+    return _ffmpeg_lw_output_args(_ffmpeg_rtp_url(lw_id))
+
+
 def _start_local_route_buffered(route: dict, inp,
                                 hub_url: str, site_name: str, monitor):
-    """Same-site route: SignalScope PCM buffer → ffmpeg stdin → destination output."""
+    """Same-site route: PCM buffer → ffmpeg(s) → destination output(s).
+    Supports fan-out: one source, multiple destination ffmpeg processes,
+    each with an independent generator reading from the shared ring buffer."""
     import shutil
     rid    = route["id"]
     ffmpeg = shutil.which("ffmpeg")
@@ -1840,48 +1997,68 @@ def _start_local_route_buffered(route: dict, inp,
         _report_status(hub_url, site_name, rid, "error", "ffmpeg not found")
         return
 
-    # _stream_buf_chunks always outputs stereo-interleaved s16le/48000/2
-    cmd = ([ffmpeg, "-y",
-            "-f", "s16le", "-ar", "48000", "-ac", "2",
-            "-i", "pipe:0"]
-           + _dest_output_args(route))
-    monitor.log(f"[AudioRouter] Local/buffered route {route['name']!r}: {' '.join(cmd)}")
-    try:
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        with _procs_lock:
-            _active_procs[rid] = proc
-    except Exception as e:
-        monitor.log(f"[AudioRouter] Local/buffered route {route['name']!r} ffmpeg failed: {e}")
-        _report_status(hub_url, site_name, rid, "error", str(e))
-        return
+    extra_dests = route.get("extra_destinations") or []
+    # Build list of output arg sets: primary first, then extras
+    all_output_args = [_dest_output_args(route)] + [_extra_dest_output_args(ed) for ed in extra_dests]
 
-    threading.Thread(target=_drain_stderr, args=(proc, route["name"], monitor),
-                     daemon=True, name=f"ARStderr-{rid[:8]}").start()
-    _report_status(hub_url, site_name, rid, "active")
-
+    base_cmd = [ffmpeg, "-y", "-f", "s16le", "-ar", "48000", "-ac", "2", "-i", "pipe:0"]
     stop = threading.Event()
 
-    def _writer():
+    procs = []
+    for out_args in all_output_args:
+        cmd = base_cmd + out_args
+        monitor.log(f"[AudioRouter] Local route {route['name']!r} output: {' '.join(out_args[-4:])}")
         try:
-            for pcm_bytes in _stream_buf_chunks(inp, stop):
-                if proc.poll() is not None:
-                    break
-                try:
-                    proc.stdin.write(pcm_bytes)
-                except BrokenPipeError:
-                    break
+            p = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            procs.append(p)
         except Exception as e:
-            monitor.log(f"[AudioRouter] Buffer writer {route['name']!r} error: {e}")
-        finally:
-            stop.set()
-            try:
-                proc.stdin.close()
-            except Exception:
-                pass
-            monitor.log(f"[AudioRouter] Buffer writer {route['name']!r} stopped.")
+            monitor.log(f"[AudioRouter] Local route {route['name']!r} ffmpeg spawn error: {e}")
+            _report_status(hub_url, site_name, rid, "error", str(e))
+            for _pp in procs:
+                try:
+                    _pp.kill()
+                except Exception:
+                    pass
+            return
 
-    threading.Thread(target=_writer, daemon=True, name=f"ARBuf-{rid[:8]}").start()
+    with _procs_lock:
+        _active_procs[rid] = procs[0]
+    with _extra_procs_lock:
+        _active_extra_procs[rid] = procs[1:]
+
+    for p in procs:
+        threading.Thread(target=_drain_stderr, args=(p, route["name"], monitor),
+                         daemon=True, name=f"ARStderr-{rid[:8]}").start()
+
+    _report_status(hub_url, site_name, rid, "active")
+
+    def _make_writer(p, is_primary):
+        def _writer():
+            try:
+                for pcm_bytes in _stream_buf_chunks(inp, stop):
+                    if p.poll() is not None:
+                        break
+                    try:
+                        p.stdin.write(pcm_bytes)
+                    except (BrokenPipeError, OSError):
+                        break
+            except Exception as e:
+                monitor.log(f"[AudioRouter] Buffer writer {route['name']!r} error: {e}")
+            finally:
+                if is_primary:
+                    stop.set()
+                try:
+                    p.stdin.close()
+                except Exception:
+                    pass
+                if is_primary:
+                    monitor.log(f"[AudioRouter] Buffer writer {route['name']!r} stopped.")
+        return _writer
+
+    for i, p in enumerate(procs):
+        threading.Thread(target=_make_writer(p, i == 0), daemon=True,
+                         name=f"ARBuf{i}-{rid[:8]}").start()
 
     with _src_threads_lock:
         _active_src_threads[rid] = threading.current_thread()
@@ -2088,12 +2265,14 @@ def _start_dest_route(route: dict,
     """
     Cross-site DEST role.
     Routing priority (best latency first):
-      1. Direct P2P  — ffmpeg pulls PCM directly from source node via
-                       /api/audiorouter/direct_stream/<rid>?token=HMAC (no hub)
+      1. Direct P2P  — Python reader thread pulls PCM from source node, pushes
+                       to a _StreamBroadcaster; N writer threads feed N ffmpeg procs.
       2. Hub relay   — background thread polls /api/audiorouter/hub_chunks/<rid>
                        (short-lived long-poll, ≤1.5 s per request) and writes
-                       chunks to ffmpeg stdin.  This replaces the old hub_stream
-                       approach which held a Waitress worker thread permanently.
+                       chunks to a _StreamBroadcaster; N writer threads feed N ffmpeg procs.
+
+    Fan-out: extra_destinations in the route dict spawn additional ffmpeg procs
+    each consuming from the same broadcaster.
 
     The source node reports its direct stream URL via the hub status API.
     The hub includes it in the poll response as 'direct_url'. We probe it
@@ -2131,60 +2310,127 @@ def _start_dest_route(route: dict,
                 f"falling back to hub relay"
             )
 
+    extra_dests = route.get("extra_destinations") or []
+    all_output_args = [_dest_output_args(route)] + [_extra_dest_output_args(ed) for ed in extra_dests]
+    base_cmd_in = [ffmpeg, "-y", "-f", "s16le", "-ar", "48000", "-ac", "2", "-i", "pipe:0"]
+
     try:
-        if via == "direct":
-            # ── Direct P2P: ffmpeg pulls from source node (no hub thread) ────
-            cmd = [
-                ffmpeg, "-y",
-                "-reconnect", "1",
-                "-reconnect_streamed", "1",
-                "-reconnect_delay_max", "5",
-                "-f", "s16le", "-ar", "48000", "-ac", "2",
-                "-i", use_direct_url,
-            ] + _dest_output_args(route)
-            monitor.log(
-                f"[AudioRouter] Dest route {route['name']!r} via=direct: {' '.join(cmd)}"
-            )
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.PIPE)
-            with _procs_lock:
-                _active_procs[rid] = proc
+        bc_local = _StreamBroadcaster()
+        stop_ev  = threading.Event()
+
+        # ── Spawn one ffmpeg per destination ─────────────────────────────────
+        procs = []
+        for out_args in all_output_args:
+            try:
+                p = subprocess.Popen(
+                    base_cmd_in + out_args,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                )
+                procs.append(p)
+            except Exception as e:
+                monitor.log(f"[AudioRouter] Dest route {route['name']!r} ffmpeg spawn error: {e}")
+                _report_status(hub_url, site_name, rid, "error", str(e))
+                for _pp in procs:
+                    try:
+                        _pp.kill()
+                    except Exception:
+                        pass
+                return
+
+        with _procs_lock:
+            _active_procs[rid] = procs[0]
+        with _extra_procs_lock:
+            _active_extra_procs[rid] = procs[1:]
+
+        for p in procs:
             threading.Thread(target=_drain_stderr,
-                             args=(proc, route["name"], monitor),
+                             args=(p, route["name"], monitor),
                              daemon=True, name=f"ARStderr-{rid[:8]}").start()
 
-        else:
-            # ── Hub relay: polling thread feeds ffmpeg stdin ──────────────────
-            # ffmpeg reads from pipe:0 (stdin); our polling thread fetches
-            # chunks from hub_chunks (short-lived ≤1.5 s long-poll) and writes
-            # them in.  No Waitress thread is permanently held on the hub.
-            hub_chunks_url = f"{hub_url}/api/audiorouter/hub_chunks/{rid}"
-            cmd = [
-                ffmpeg, "-y",
-                "-f", "s16le", "-ar", "48000", "-ac", "2",
-                "-i", "pipe:0",
-            ] + _dest_output_args(route)
-            monitor.log(
-                f"[AudioRouter] Dest route {route['name']!r} via=hub(chunks): {' '.join(cmd)}"
-            )
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                                    stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.PIPE)
-            with _procs_lock:
-                _active_procs[rid] = proc
+        # ── Writer threads: broadcaster → ffmpeg stdin ────────────────────────
+        def _make_dest_writer(p, bc, ev):
+            def _w():
+                try:
+                    try:
+                        for chunk in bc.consumer():
+                            if ev.is_set() or p.poll() is not None:
+                                break
+                            try:
+                                p.stdin.write(chunk)
+                            except (BrokenPipeError, OSError):
+                                break
+                    except GeneratorExit:
+                        pass
+                finally:
+                    try:
+                        p.stdin.close()
+                    except Exception:
+                        pass
+            return _w
 
-            stop_ev = threading.Event()
+        for p in procs:
+            threading.Thread(target=_make_dest_writer(p, bc_local, stop_ev),
+                             daemon=True, name=f"ARDstW-{rid[:8]}").start()
+
+        if via == "direct":
+            # ── Direct P2P: Python reader → broadcaster ──────────────────────
+            monitor.log(
+                f"[AudioRouter] Dest route {route['name']!r} via=direct (bc): {use_direct_url}"
+            )
+
+            def _direct_reader():
+                try:
+                    req = urllib.request.Request(
+                        use_direct_url,
+                        headers={"X-Audio-Token": token, "X-Accel-Buffering": "no"},
+                    )
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        while not stop_ev.is_set():
+                            chunk = resp.read(9600)
+                            if not chunk:
+                                break
+                            bc_local.push(chunk)
+                except Exception as e:
+                    if not stop_ev.is_set():
+                        monitor.log(f"[AudioRouter] Direct reader {route['name']!r}: {e}")
+                finally:
+                    bc_local.close()
+
+            threading.Thread(target=_direct_reader, daemon=True,
+                             name=f"ARDirRdr-{rid[:8]}").start()
+
+        else:
+            # ── Hub relay: _BcProc adapter → _hub_poll_and_feed ──────────────
+            hub_chunks_url = f"{hub_url}/api/audiorouter/hub_chunks/{rid}"
+            monitor.log(
+                f"[AudioRouter] Dest route {route['name']!r} via=hub(chunks+bc)"
+            )
+
+            class _BcProc:
+                """Fake proc that feeds PCM chunks into bc_local via its stdin."""
+                class _Stdin:
+                    def __init__(self, bc): self._bc = bc
+                    def write(self, data): self._bc.push(data)
+                    def close(self): self._bc.close()
+                def __init__(self, bc, ev):
+                    self.stdin = _BcProc._Stdin(bc)
+                    self._ev = ev
+                def poll(self): return None if not self._ev.is_set() else 0
+                def kill(self): self._ev.set()
+                def wait(self, timeout=None): self._ev.wait(timeout)
+
+            bc_proc = _BcProc(bc_local, stop_ev)
+
             with _dest_stop_lock:
                 _dest_stop_events[rid] = stop_ev
 
             threading.Thread(
                 target=_hub_poll_and_feed,
-                args=(proc, hub_chunks_url, token, stop_ev, route["name"], monitor),
+                args=(bc_proc, hub_chunks_url, token, stop_ev, route["name"], monitor),
                 daemon=True, name=f"ARDestPoll-{rid[:8]}"
             ).start()
-            threading.Thread(target=_drain_stderr,
-                             args=(proc, route["name"], monitor),
-                             daemon=True, name=f"ARStderr-{rid[:8]}").start()
 
         _report_status(hub_url, site_name, rid, "active", f"via {via}")
 

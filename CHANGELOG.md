@@ -26,6 +26,18 @@ recovery, when Zetta confirms a spot, and when the grace window expires.
 
 ---
 
+### Audio Router plugin v1.3.0 — 2026-04-30
+
+**Poll jitter, source level meters, LW duplicate check, fan-out extra destinations, idle status detail**
+
+- **Poll jitter** (`_client_router_thread`): sleep changed from `8 s` to `8 + random.uniform(0, 2)` s to prevent thundering-herd synchronisation when many clients poll simultaneously.
+- **Source level meters**: routes list API now includes `source_level_dbfs` per route from live hub data. Route cards show a 4 px colour-coded bar (green / amber / red) below the source badge — gives at-a-glance signal presence without opening the hub dashboard.
+- **Livewire duplicate Stream ID check**: `POST /api/hub/audiorouter/routes` now returns HTTP 400 with a descriptive error if a new LW route requests a Stream ID already in use by an existing route.
+- **Fan-out extra destinations**: routes now accept an `extra_destinations` array (LW multicast or RTP unicast). Local routes write to N independent `_stream_buf_chunks` generators feeding N ffmpeg procs. Cross-site dest routes use `_StreamBroadcaster` + `_BcProc` adapter for fan-out without duplicating the hub relay connection. Add-Route UI has a "+ Add Output" section with CSP-safe event delegation.
+- **Idle status detail**: overall badge now shows "Starting…" (amber) when both source and dest have a zero timestamp (ffmpeg just launched). Per-side badge shows "Stopped" instead of "Idle" when a route has been stopped but retains a last-seen timestamp.
+
+---
+
 ### SignalScope-3.5.192 — 2026-04-30
 
 **Fix: Wall mode (`/hub?wall=1`) 500 error**
