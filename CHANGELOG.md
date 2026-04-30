@@ -2,6 +2,21 @@
 
 ---
 
+### vMix Caller 1.7.7 — 2026-04-30
+
+**Fix: Docker/SRS management works correctly for non-root users**
+
+- **`_docker_cmd()`** replaces `_docker_bin()`. Tries direct docker access first; if that fails (user not in docker group), automatically falls back to `sudo -n docker` — which works once the sudoers entry below exists. All `_srs_status/start/stop` functions updated accordingly.
+
+- **Install Docker with sudo password** (client page): when Docker is not found, the SRS Bridge card now shows a password field and an ⬇ Install Docker button. Entering your sudo password and clicking it:
+  1. Runs `sudo -S apt-get install docker.io` (falls back to `get.docker.com` script if apt not available)
+  2. Writes `/etc/sudoers.d/signalscope-docker` so subsequent docker calls work via `sudo -n docker` without any password (same pattern as the reboot sudoers entry)
+  3. Adds the current user to the `docker` group (takes effect after SignalScope restart)
+
+- **Hub page**: when a selected site has Docker missing, shows "open the client page for this site to install it" instead of a button — docker install can't be done remotely because the sudo password can't safely travel via the command queue.
+
+---
+
 ### vMix Caller 1.7.6 — 2026-04-30
 
 **Feature: Docker auto-install from the SRS Bridge card**

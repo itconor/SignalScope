@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.7.6",
+    "version": "1.7.7",
 }
 
 import os
@@ -860,22 +860,46 @@ _SRS_RUN_ARGS    = [
 ]
 
 
-def _docker_bin() -> str | None:
-    """Return path to docker binary, or None if not installed."""
-    import shutil
-    return shutil.which("docker")
+def _docker_cmd() -> list | None:
+    """Return base docker command list.
+
+    Tries direct invocation first (works if running as root or user is in
+    the docker group).  Falls back to ['sudo', '-n', docker_path] which
+    works after a passwordless sudoers entry has been written for docker.
+    Returns None if docker is not installed or not accessible either way.
+    """
+    import shutil as _sh, subprocess as _sp
+    d = _sh.which("docker")
+    if not d:
+        return None
+    # Try direct access (root / docker group)
+    try:
+        if _sp.run([d, "version"], capture_output=True, timeout=4).returncode == 0:
+            return [d]
+    except Exception:
+        pass
+    # Try passwordless sudo (works after sudoers entry is written)
+    sudo = _sh.which("sudo")
+    if sudo:
+        try:
+            if _sp.run([sudo, "-n", d, "version"],
+                       capture_output=True, timeout=4).returncode == 0:
+                return [sudo, "-n", d]
+        except Exception:
+            pass
+    return None
 
 
 def _srs_status() -> dict:
     """Return dict: docker_ok, running, exists, status_text, logs."""
-    docker = _docker_bin()
+    docker = _docker_cmd()
     if not docker:
         return {"docker_ok": False, "running": False, "exists": False,
-                "status_text": "docker not found", "logs": ""}
+                "status_text": "docker not found or not accessible", "logs": ""}
     import subprocess as _sp
     try:
         r = _sp.run(
-            [docker, "inspect", "--format", "{{.State.Status}}", _SRS_CONTAINER],
+            docker + ["inspect", "--format", "{{.State.Status}}", _SRS_CONTAINER],
             capture_output=True, text=True, timeout=8,
         )
         if r.returncode != 0:
@@ -885,7 +909,7 @@ def _srs_status() -> dict:
         running = status == "running"
         # Fetch last 30 log lines
         lr = _sp.run(
-            [docker, "logs", "--tail", "30", _SRS_CONTAINER],
+            docker + ["logs", "--tail", "30", _SRS_CONTAINER],
             capture_output=True, text=True, timeout=8,
         )
         logs = (lr.stdout + lr.stderr).strip()
@@ -898,9 +922,9 @@ def _srs_status() -> dict:
 
 def _srs_start() -> dict:
     """Start the SRS container. Pulls image on first run."""
-    docker = _docker_bin()
+    docker = _docker_cmd()
     if not docker:
-        return {"ok": False, "msg": "docker not found — install Docker first"}
+        return {"ok": False, "msg": "docker not found or not accessible — install Docker first"}
     import subprocess as _sp
     try:
         # Check current state
@@ -910,16 +934,16 @@ def _srs_start() -> dict:
 
         if st.get("exists"):
             # Container exists but stopped — just start it
-            r = _sp.run([docker, "start", _SRS_CONTAINER],
+            r = _sp.run(docker + ["start", _SRS_CONTAINER],
                         capture_output=True, text=True, timeout=30)
             if r.returncode == 0:
                 return {"ok": True, "msg": "SRS started"}
             # Container is in a bad state — remove and recreate
-            _sp.run([docker, "rm", "-f", _SRS_CONTAINER],
+            _sp.run(docker + ["rm", "-f", _SRS_CONTAINER],
                     capture_output=True, timeout=15)
 
         # Fresh run — may pull image (can take a minute first time)
-        r = _sp.run([docker, "run"] + _SRS_RUN_ARGS,
+        r = _sp.run(docker + ["run"] + _SRS_RUN_ARGS,
                     capture_output=True, text=True, timeout=120)
         if r.returncode == 0:
             return {"ok": True, "msg": "SRS container started"}
@@ -931,12 +955,12 @@ def _srs_start() -> dict:
 
 def _srs_stop() -> dict:
     """Stop the SRS container (leaves it removable via docker start later)."""
-    docker = _docker_bin()
+    docker = _docker_cmd()
     if not docker:
         return {"ok": False, "msg": "docker not found"}
     import subprocess as _sp
     try:
-        r = _sp.run([docker, "stop", _SRS_CONTAINER],
+        r = _sp.run(docker + ["stop", _SRS_CONTAINER],
                     capture_output=True, text=True, timeout=20)
         if r.returncode == 0:
             return {"ok": True, "msg": "SRS stopped"}
@@ -946,9 +970,18 @@ def _srs_stop() -> dict:
         return {"ok": False, "msg": str(e)[:200]}
 
 
-def _docker_install() -> dict:
-    """Attempt to install Docker on this machine (Linux only via apt-get or get.docker.com)."""
-    import platform, subprocess as _sp
+def _docker_install(sudo_password: str = "") -> dict:
+    """Install Docker and write a passwordless sudoers entry for docker commands.
+
+    On Linux:
+      1. Uses sudo -S to run apt-get install docker.io (or get.docker.com script)
+      2. Writes /etc/sudoers.d/signalscope-docker so subsequent docker calls
+         work via 'sudo -n docker ...' without any password
+      3. Adds the current user to the docker group (takes effect after restart)
+
+    sudo_password must be provided when not running as root.
+    """
+    import platform, subprocess as _sp, shutil as _sh, os as _os, getpass as _gp
     system = platform.system()
     if system != "Linux":
         return {
@@ -956,38 +989,87 @@ def _docker_install() -> dict:
             "msg": f"Auto-install only supported on Linux ({system} detected). "
                    "Download Docker Desktop from https://docs.docker.com/get-docker/",
         }
-    import shutil as _sh
-    env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+
+    pw = (sudo_password or "").encode()
+    is_root = (_os.geteuid() == 0)
+
+    if not is_root and not pw:
+        return {"ok": False,
+                "msg": "Sudo password required — enter it in the password field"}
+
+    def _sudo_run(cmd, input_extra=b""):
+        """Run a command with sudo -S feeding password, or directly if root."""
+        if is_root:
+            return _sp.run(cmd, capture_output=True, text=True, timeout=300)
+        sudo = _sh.which("sudo")
+        if not sudo:
+            raise RuntimeError("sudo not found")
+        return _sp.run(
+            [sudo, "-S"] + cmd,
+            input=(pw + b"\n" + input_extra).decode(errors="replace"),
+            capture_output=True, text=True, timeout=300,
+        )
+
+    env = {**_os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+
+    # ── Step 1: install docker ────────────────────────────────────────────────
     apt = _sh.which("apt-get")
     if apt:
         try:
-            _sp.run([apt, "-y", "update"],
-                    capture_output=True, text=True, timeout=120, env=env)
-            r = _sp.run([apt, "-y", "install", "docker.io"],
-                        capture_output=True, text=True, timeout=300, env=env)
-            if r.returncode == 0:
-                return {"ok": True,
-                        "msg": "Docker installed successfully via apt-get."}
-            out = ((r.stderr or "") + (r.stdout or "")).strip()[:400]
-            return {"ok": False, "msg": out or "apt-get install docker.io failed"}
+            _sudo_run([apt, "-y", "update"])
+            r = _sudo_run([apt, "-y", "install", "docker.io"])
+            if r.returncode != 0:
+                out = ((r.stderr or "") + (r.stdout or "")).strip()[:400]
+                return {"ok": False, "msg": out or "apt-get install docker.io failed — wrong sudo password?"}
         except Exception as e:
             return {"ok": False, "msg": str(e)[:200]}
-    curl = _sh.which("curl")
-    if curl:
+    else:
+        curl = _sh.which("curl")
+        if not curl:
+            return {"ok": False,
+                    "msg": "apt-get not found and curl not available. Install Docker manually."}
         try:
-            r = _sp.run(["sh", "-c", "curl -fsSL https://get.docker.com | sh"],
-                        capture_output=True, text=True, timeout=600, env=env)
-            if r.returncode == 0:
-                return {"ok": True,
-                        "msg": "Docker installed via get.docker.com script."}
-            out = ((r.stderr or "") + (r.stdout or "")).strip()[:400]
-            return {"ok": False, "msg": out or "install script failed"}
+            r = _sudo_run(["sh", "-c", "curl -fsSL https://get.docker.com | sh"])
+            if r.returncode != 0:
+                out = ((r.stderr or "") + (r.stdout or "")).strip()[:400]
+                return {"ok": False, "msg": out or "get.docker.com install script failed"}
         except Exception as e:
             return {"ok": False, "msg": str(e)[:200]}
+
+    # ── Step 2: write sudoers entry so docker works passwordlessly going forward ─
+    if not is_root:
+        try:
+            _user = _gp.getuser()
+        except Exception:
+            _user = _os.environ.get("USER", "nobody")
+        docker_path = _sh.which("docker") or "/usr/bin/docker"
+        sudoers_line = f"{_user} ALL=(ALL) NOPASSWD: {docker_path}\n"
+        sudoers_file = "/etc/sudoers.d/signalscope-docker"
+        try:
+            sudo = _sh.which("sudo")
+            r = _sp.run(
+                [sudo, "-S", "tee", sudoers_file],
+                input=(pw.decode(errors="replace") + "\n" + sudoers_line),
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                _sp.run([sudo, "-S", "chmod", "0440", sudoers_file],
+                        input=(pw.decode(errors="replace") + "\n"),
+                        capture_output=True, timeout=5)
+        except Exception:
+            pass  # sudoers write failure is non-fatal — docker still installed
+
+        # ── Step 3: add user to docker group (takes effect after restart) ──────
+        try:
+            _sudo_run(["usermod", "-aG", "docker", _user])
+        except Exception:
+            pass
+
     return {
-        "ok":  False,
-        "msg": "No package manager found. Install Docker manually: "
-               "https://docs.docker.com/engine/install/",
+        "ok":  True,
+        "msg": "Docker installed successfully. "
+               "SRS Start/Stop will now work via passwordless sudo. "
+               "Restart SignalScope to also gain direct docker group access.",
     }
 
 
@@ -1148,37 +1230,6 @@ def _start_client_thread(monitor, hub_url: str):
                                 "seq":  cmd["seq"],
                                 "ok":   result["ok"],
                                 "resp": (result.get("msg") or "")[:120],
-                            },
-                        })
-                    except Exception:
-                        pass
-                elif fn == "docker_install":
-                    # Run install in background so polling thread isn't blocked
-                    _seq = cmd["seq"]
-                    def _do_docker_install(_seq=_seq, _site=site, _secret=secret,
-                                           _hub=hub_url):
-                        result = _docker_install()
-                        try:
-                            _hub_post(f"{_hub}/api/vmixcaller/report", _site, _secret, {
-                                "cmd_result": {
-                                    "seq":  _seq,
-                                    "ok":   result["ok"],
-                                    "resp": (result.get("msg") or "")[:120],
-                                },
-                            })
-                        except Exception:
-                            pass
-                    threading.Thread(
-                        target=_do_docker_install, daemon=True,
-                        name="DockerInstall",
-                    ).start()
-                    # Ack immediately so polling continues uninterrupted
-                    try:
-                        _hub_post(f"{hub_url}/api/vmixcaller/report", site, secret, {
-                            "cmd_result": {
-                                "seq":  cmd["seq"],
-                                "ok":   True,
-                                "resp": "Docker install started on client — may take a few minutes",
                             },
                         })
                     except Exception:
@@ -2626,10 +2677,10 @@ _HUB_TPL = r"""<!DOCTYPE html>
               <div style="font-size:12px;color:var(--mu);margin-bottom:2px">Container status</div>
               <div id="srs-status-text" style="font-size:13px;color:var(--tx)">Waiting for report…</div>
             </div>
-            <button class="btn bp bs" id="srs-install-docker-btn" data-srs-action="install-docker" style="display:none">⬇ Install Docker</button>
             <button class="btn bp bs" id="srs-start-btn" data-srs-action="start" style="display:none">▶ Start SRS</button>
             <button class="btn bd bs" id="srs-stop-btn" data-srs-action="stop" style="display:none">■ Stop SRS</button>
           </div>
+          <div id="srs-install-docker-note" style="display:none;font-size:11px;color:var(--wn);margin-top:4px">Docker not found on this site — open the <strong>client page</strong> for this site to install it.</div>
           <div id="srs-msg" style="display:none;margin-top:8px;padding:6px 10px;border-radius:6px;font-size:12px"></div>
           <p style="font-size:11px;color:var(--mu);margin-top:10px;margin-bottom:0">
             Queues Start/Stop commands to the selected site. Status updates every ~12 s when the client reports back.
@@ -3212,11 +3263,11 @@ document.addEventListener('DOMContentLoaded',function(){
     if(noSite)noSite.style.display='none';
     if(panel)panel.style.display='';
     if(lbl)lbl.textContent=site;
-    var installBtn=document.getElementById('srs-install-docker-btn');
+    var installNote=document.getElementById('srs-install-docker-note');
     if(!srs){
       if(txt)txt.textContent='Waiting for first report…';
       if(badge){badge.textContent='';badge.style.background='';}
-      if(installBtn)installBtn.style.display='none';
+      if(installNote)installNote.style.display='none';
       if(startBtn)startBtn.style.display='none';
       if(stopBtn)stopBtn.style.display='none';
       return;
@@ -3224,12 +3275,12 @@ document.addEventListener('DOMContentLoaded',function(){
     if(!srs.docker_ok){
       if(txt)txt.textContent='Docker not found on '+site;
       if(badge){badge.textContent='unavailable';badge.style.background='#374151';badge.style.color='#9ca3af';}
-      if(installBtn)installBtn.style.display='inline-block';
+      if(installNote)installNote.style.display='block';
       if(startBtn)startBtn.style.display='none';
       if(stopBtn)stopBtn.style.display='none';
       return;
     }
-    if(installBtn)installBtn.style.display='none';
+    if(installNote)installNote.style.display='none';
     var st=srs.status_text||'unknown';
     if(txt)txt.textContent=srs.exists?(st.charAt(0).toUpperCase()+st.slice(1)):'Not created';
     if(badge){
@@ -3243,7 +3294,7 @@ document.addEventListener('DOMContentLoaded',function(){
   function srsSendCmd(action){
     var site=(document.getElementById('target-site')||{}).value||'';
     if(!site){_srsMsg('Select a site first',false);return;}
-    var _actionLabel = action==='start'?'Starting SRS':action==='stop'?'Stopping SRS':'Installing Docker';
+    var _actionLabel = action==='start'?'Starting SRS':'Stopping SRS';
     _srsMsg(_actionLabel+' on '+site+' — command queued…',true);
     var startBtn=document.getElementById('srs-start-btn');
     var stopBtn=document.getElementById('srs-stop-btn');
@@ -3256,10 +3307,7 @@ document.addEventListener('DOMContentLoaded',function(){
       body:JSON.stringify({site:site,action:action})})
       .then(function(r){return r.json();})
       .then(function(d){
-        var _waitMsg = action==='install_docker'
-          ? 'Install command sent to '+site+' — this may take a few minutes. Status updates when client reports back.'
-          : 'Command sent to '+site+' — status updates in ~12 s';
-        if(d.ok){_srsMsg(_waitMsg,true);}
+        if(d.ok){_srsMsg('Command sent to '+site+' — status updates in ~12 s',true);}
         else{_srsMsg(d.error||'Failed',false);}
         if(startBtn)startBtn.disabled=false;
         if(stopBtn)stopBtn.disabled=false;
@@ -3272,7 +3320,6 @@ document.addEventListener('DOMContentLoaded',function(){
     var act=btn.dataset.srsAction;
     if(act==='start') srsSendCmd('start');
     else if(act==='stop') srsSendCmd('stop');
-    else if(act==='install-docker') srsSendCmd('install_docker');
   });
   updateSrsCard(null, '');
 });
@@ -3378,10 +3425,16 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
             <div style="font-size:12px;color:var(--mu);margin-bottom:2px">Container status</div>
             <div id="srs-status-text" style="font-size:13px;color:var(--tx)">Checking…</div>
           </div>
-          <button class="btn bp bs" id="srs-install-docker-btn" data-srs-action="install-docker" style="display:none">⬇ Install Docker</button>
           <button class="btn bp bs" id="srs-start-btn" data-srs-action="start" style="display:none">▶ Start SRS</button>
           <button class="btn bd bs" id="srs-stop-btn" data-srs-action="stop" style="display:none">■ Stop SRS</button>
           <button class="btn bg bs" data-srs-action="refresh" title="Refresh status">↻</button>
+        </div>
+        <div id="srs-docker-install-row" style="display:none;margin-top:10px;padding:10px;background:#050e20;border:1px solid var(--bor);border-radius:8px">
+          <div style="font-size:11px;color:var(--mu);margin-bottom:6px">Docker not found — enter your sudo password to install it:</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="password" id="srs-sudo-pw" placeholder="sudo password" autocomplete="current-password" style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:12px;flex:1;min-width:140px">
+            <button class="btn bp bs" id="srs-install-docker-btn" data-srs-action="install-docker">⬇ Install Docker</button>
+          </div>
         </div>
         <div id="srs-msg" style="display:none;margin-top:8px;padding:6px 10px;border-radius:6px;font-size:12px"></div>
         <div id="srs-logs-wrap" style="margin-top:10px;display:none">
@@ -3828,18 +3881,17 @@ function srsRefresh(){
   fetch('/api/vmixcaller/srs_status',{credentials:'same-origin'})
     .then(function(r){return r.json();})
     .then(function(d){
-      var installBtn=document.getElementById('srs-install-docker-btn');
+      var installRow=document.getElementById('srs-docker-install-row');
       if(!d.docker_ok){
         if(txt) txt.textContent='Docker not found on this machine';
         if(badge){badge.textContent='unavailable';badge.style.background='#374151';badge.style.color='#9ca3af';}
-        if(installBtn) installBtn.style.display='inline-block';
+        if(installRow) installRow.style.display='block';
         if(startBtn) startBtn.style.display='none';
         if(stopBtn)  stopBtn.style.display='none';
         if(logsWrap) logsWrap.style.display='none';
         return;
       }
-      var installBtn=document.getElementById('srs-install-docker-btn');
-      if(installBtn) installBtn.style.display='none';
+      if(installRow) installRow.style.display='none';
       var st=d.status_text||'unknown';
       if(txt) txt.textContent=d.exists?(st.charAt(0).toUpperCase()+st.slice(1)):'Not created';
       if(badge){
@@ -3900,17 +3952,22 @@ function srsStop(){
     .catch(function(e){_srsMsg('Error: '+e,false);if(stopBtn) stopBtn.disabled=false;});
 }
 function srsInstallDocker(){
+  var pwEl=document.getElementById('srs-sudo-pw');
+  var pw=(pwEl&&pwEl.value)||'';
+  if(!pw){_srsMsg('Enter your sudo password first',false);return;}
   _srsMsg('Installing Docker — this may take a few minutes…',true);
   var installBtn=document.getElementById('srs-install-docker-btn');
   if(installBtn) installBtn.disabled=true;
   var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content
          ||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
   fetch('/api/vmixcaller/docker_install',{method:'POST',credentials:'same-origin',
-    headers:{'Content-Type':'application/json','X-CSRFToken':csrf},body:'{}'})
+    headers:{'Content-Type':'application/json','X-CSRFToken':csrf},
+    body:JSON.stringify({password:pw})})
     .then(function(r){return r.json();})
     .then(function(d){
       _srsMsg((d.msg||''),d.ok);
       if(installBtn) installBtn.disabled=false;
+      if(pwEl) pwEl.value='';
       if(d.ok) setTimeout(srsRefresh,2000);
     })
     .catch(function(e){_srsMsg('Error: '+e,false);if(installBtn) installBtn.disabled=false;});
@@ -4924,14 +4981,14 @@ def register(app, ctx):
     @login_required
     @csrf_protect
     def vmixcaller_srs_cmd():
-        """Hub queues an srs_start, srs_stop, or docker_install command for a remote site."""
+        """Hub queues an srs_start or srs_stop command for a remote site."""
         data   = request.get_json(silent=True) or {}
         site   = str(data.get("site",   "") or "").strip()
         action = str(data.get("action", "") or "").strip()
-        if not site or action not in ("start", "stop", "install_docker"):
+        if not site or action not in ("start", "stop"):
             return jsonify({"ok": False,
-                            "error": "site and action (start/stop/install_docker) required"}), 400
-        fn = f"srs_{action}" if action != "install_docker" else "docker_install"
+                            "error": "site and action (start/stop) required"}), 400
+        fn = f"srs_{action}"
         with _state_lock:
             _pending_cmd[site] = {
                 "fn":  fn,
@@ -4944,7 +5001,9 @@ def register(app, ctx):
     @csrf_protect
     def vmixcaller_docker_install():
         """Install Docker on this (local) machine — used by client page."""
-        return jsonify(_docker_install())
+        data = request.get_json(silent=True) or {}
+        pw   = str(data.get("password", "") or "")
+        return jsonify(_docker_install(sudo_password=pw))
 
     # ── Meeting actions — browser-facing (hub executes / client proxies) ──────
     @app.post("/api/vmixcaller/zoom_action")
