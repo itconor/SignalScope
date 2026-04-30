@@ -38,6 +38,18 @@ Brand Screen registers `/api/brandscreen/` so producer logins can change studio 
 
 ---
 
+### Brand Screen plugin v1.3.17 — 2026-04-30
+
+**Fix producer view blank on load**
+
+Two bugs in 1.3.16:
+
+1. `renderScreens()` and `renderSchedules()` were only ever called from inside the `_loadActive()` fetch callback. If the request was slow (or the page loaded before the response returned), both sections stayed blank — the user only saw the static "Add a scheduled change" toggle. Fix: call both render functions immediately on page load from the server-rendered data, then `_loadActive()` re-renders once the active-schedule state arrives.
+
+2. The logo `<img>` used an `onerror="this.style.display='none'"` inline attribute, which is blocked by CSP `script-src-attr`. Removed; now uses `st._has_logo` (already set server-side) to conditionally include the `<img>` tag. Placeholder emoji shown correctly when station has no logo.
+
+---
+
 ### Brand Screen plugin v1.3.16 — 2026-04-30
 
 **Simplified producer view for non-admin logins**

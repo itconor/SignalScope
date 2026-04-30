@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.16",
+    "version":  "1.3.17",
 }
 
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -614,8 +614,8 @@ function renderScreens(){
       var sc=_schedules.find(function(s){return s.id===schedEntry.active_schedule_id;});
       schedBrand=sc?_stations.find(function(s){return s.id===sc.station_id;}):null;
     }
-    var logoHtml=st?'<img src="/api/brandscreen/logo/'+st.id+'?t='+Date.now()+'" alt="" onerror="this.style.display=\'none\'">':'';
-    var logoBox='<div class="sc-logo-box">'+logoHtml+'<span class="sc-logo-placeholder" style="display:'+(st?'none':'flex')+'">📺</span></div>';
+    var logoHtml=(st&&st._has_logo)?'<img src="/api/brandscreen/logo/'+st.id+'?t='+Date.now()+'" alt="">':'';
+    var logoBox='<div class="sc-logo-box">'+logoHtml+'<span class="sc-logo-placeholder" style="display:'+((st&&st._has_logo)?'none':'flex')+'">📺</span></div>';
     var brandColour=st?(st.brand_colour||'#17a8ff'):'#17a8ff';
     var brandName=st?('<span style="color:'+_esc(brandColour)+'">'+_esc(st.name)+'</span>'):'<span class="sc-unassigned">Nothing assigned</span>';
     var schedBadge=hasSched?'<div class="sc-sched-badge">📅 Scheduled'+(schedBrand?' — showing '+_esc(schedBrand.name):'')+'</div>':'';
@@ -742,6 +742,11 @@ function _loadActive(){
     .then(function(d){_schedActive=d.active||{};renderScreens();renderSchedules();})
     .catch(function(){});
 }
+// Render immediately from server-rendered data so the page isn't blank
+// while _loadActive() is in flight. _loadActive() re-renders once the
+// active schedule state is known.
+renderScreens();
+renderSchedules();
 _loadActive();
 setInterval(_loadActive,30000);
 
