@@ -2,6 +2,22 @@
 
 ---
 
+### Brand Screen plugin v1.3.19 — 2026-04-30
+
+**CueServer LED integration**
+
+When the active brand changes for a studio — via manual assignment, REST API, scheduled takeover activate, or scheduled takeover revert — Brand Screen can now trigger a CueServer CGI command to change the LED scene in that studio.
+
+Architecture: hub → client command routing (same pattern used by Audio Router and vMix Caller).
+- **Per-studio config** (admin → Studios → Edit): "Client Site" dropdown (lists all approved hub sites) and "CueServer Host" text field (IP/hostname of the CueServer appliance on that site's LAN).
+- **Per-brand config** (admin → Stations → Edit): "CueServer Command" field — the CGI command string to send (e.g. `Cue 5 Go`, `M1`). Leave blank to skip CueServer for that brand.
+- **Hub** queues the latest command in `_cs_pending[site]` (module-level dict) whenever a brand change fires.
+- **Client polling thread** (started at plugin load on client nodes): polls `GET /api/brandscreen/cueserver_cmd` on the hub every 5 s; when a command is returned, fires `http://{host}/exe.cgi?cmd=...` to the local CueServer appliance.
+- Hub poll endpoint authenticates by `X-Site` header — site must be `_approved` in hub state.
+- Only the latest pending command per site is stored (last writer wins — no command accumulation).
+
+---
+
 ### SignalScope-3.5.193 — 2026-04-30
 
 **Fix: False CHAIN_FAULT at ad break start when Zetta SOAP poll lags audio silence**

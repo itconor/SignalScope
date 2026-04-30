@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.18",
+    "version":  "1.3.19",
 }
 
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +39,11 @@ _MLOCK       = threading.Lock()
 # revert so the operator assignment sticks).
 _schedule_state: dict = {}   # studio_id → {pre_station_id, active_schedule_id, rest_override}
 _SCHED_LOCK = threading.Lock()
+
+# ─────────────────────────────────── CueServer pending commands ───────────────
+# site_name → {"host": str, "cmd": str}  — latest command to send via that site
+_cs_pending: dict = {}
+_cs_lock    = threading.Lock()
 
 os.makedirs(_LOGO_DIR, exist_ok=True)
 
@@ -92,6 +97,7 @@ def _new_station():
         "message":            "",
         "level_key":          "",   # "site|stream" for audio reactivity
         "full_screen_logo":   False, # display logo only — no backgrounds, animations, clock, NP
+        "cueserver_cmd":      "",    # CueServer CGI command string (e.g. "Cue 5 Go")
     }
 
 def _new_studio():
@@ -100,7 +106,9 @@ def _new_studio():
         "name":         "Studio",
         "station_id":   "",
         "token":        str(uuid.uuid4()).replace("-", ""),
-        "sb_studio_id": "",   # linked studioboard studio for mic-live detection
+        "sb_studio_id":    "",   # linked studioboard studio for mic-live detection
+        "cueserver_site": "",    # hub site name where CueServer lives
+        "cueserver_host": "",    # CueServer hostname / IP on that site's LAN
     }
 
 def _ensure_api_key(cfg):
@@ -205,6 +213,8 @@ def _check_schedules():
                 break
         _cfg_save(cfg2)
         _notify_studio(studio_id)
+        # CueServer — trigger LED scene for the newly scheduled station
+        _cueserver_trigger(studios.get(studio_id), _get_station(cfg2, sched["station_id"]))
 
     # ── Deactivate schedules whose window has passed ───────────────────────────
     with _SCHED_LOCK:
@@ -231,6 +241,9 @@ def _check_schedules():
                     break
             _cfg_save(cfg2)
             _notify_studio(studio_id)
+            # CueServer — trigger LED scene for the reverted station
+            _cueserver_trigger(_get_studio(cfg2, studio_id),
+                               _get_station(cfg2, pre_station_id) if pre_station_id else None)
 
 
 def _schedule_loop():
@@ -241,6 +254,24 @@ def _schedule_loop():
             _check_schedules()
         except Exception:
             pass
+
+def _cueserver_trigger(studio, station):
+    """Queue a CueServer LED command for the client that hosts this studio.
+
+    Called whenever the active brand changes for a studio (manual assignment,
+    schedule activate, or schedule deactivate/revert).  The command is stored
+    in _cs_pending keyed by site name.  The client poller thread (started in
+    register() on client nodes) picks it up within ~5 s and fires the CGI call.
+    """
+    if not studio or not station:
+        return
+    cs_site = (studio.get("cueserver_site") or "").strip()
+    cs_host = (studio.get("cueserver_host") or "").strip()
+    cs_cmd  = (station.get("cueserver_cmd")  or "").strip()
+    if not cs_site or not cs_host or not cs_cmd:
+        return
+    with _cs_lock:
+        _cs_pending[cs_site] = {"host": cs_host, "cmd": cs_cmd}
 
 # Start mic monitor thread once at plugin load
 threading.Thread(target=_mic_monitor_loop, daemon=True, name="bs-mic-monitor").start()
@@ -1338,6 +1369,9 @@ function _studioForm(sd){
   var sbOpts=_sbStudios.map(function(s){
     return '<option value="'+_esc(s.id)+'"'+((sd.sb_studio_id||'')=== s.id?' selected':'')+'>'+_esc(s.name)+'</option>';
   }).join('');
+  var csHubSiteOpts=_hubSites.map(function(sn){
+    return '<option value="'+_esc(sn)+'"'+((sd.cueserver_site||'')===sn?' selected':'')+'>'+_esc(sn)+'</option>';
+  }).join('');
   var screenUrl=location.origin+'/brandscreen/studio/'+sd.id+'?token='+sd.token;
   return '<div class="grid2" style="margin-bottom:12px">'
     +'<div class="field"><label>Studio Name</label><input type="text" id="sd-name-'+sd.id+'" value="'+_esc(sd.name)+'"></div>'
@@ -1347,6 +1381,18 @@ function _studioForm(sd){
     +'<label>Mic Live — Link to Studio Board Studio</label>'
     +'<select id="sd-sbst-'+sd.id+'"><option value="">— none (no mic suppression) —</option>'+sbOpts+'</select>'
     +'<p class="hint" style="margin-top:4px">When the selected Studio Board studio has a mic live, this Brand Screen will show a full-screen suppression overlay.</p>'
+    +'</div>'
+    +'<hr class="sep">'
+    +'<div class="slabel">CueServer LED Integration</div>'
+    +'<div class="grid2" style="margin-bottom:12px">'
+    +'<div class="field"><label>Client Site</label>'
+    +'<select id="sd-cs-site-'+sd.id+'"><option value="">— none —</option>'+csHubSiteOpts+'</select>'
+    +'<p class="hint" style="margin-top:4px">The SignalScope client node that is on the same LAN as the CueServer appliance for this studio.</p>'
+    +'</div>'
+    +'<div class="field"><label>CueServer Host</label>'
+    +'<input type="text" id="sd-cs-host-'+sd.id+'" value="'+_esc(sd.cueserver_host||'')+'" placeholder="192.168.1.50">'
+    +'<p class="hint" style="margin-top:4px">IP address or hostname of the CueServer appliance on the studio LAN.</p>'
+    +'</div>'
     +'</div>'
     +'<div class="slabel">Screen URL</div>'
     +'<div class="tok-row" style="margin-bottom:6px"><input type="text" value="'+_esc(sd.token)+'" readonly>'
@@ -1469,6 +1515,13 @@ function _stationForm(s){
     +'</div>'
     +'<p class="hint" style="margin-top:5px">PNG with transparent background recommended. SVG, JPG, WebP also supported.</p>'
     +'<hr class="sep">'
+    +'<div class="slabel">CueServer LED Command</div>'
+    +'<div class="field">'
+    +'<label>Command string</label>'
+    +'<input type="text" id="f-csCmd-'+s.id+'" value="'+_esc(s.cueserver_cmd||'')+'" placeholder="Cue 5 Go">'
+    +'<p class="hint" style="margin-top:4px">CueServer CGI command sent when this brand becomes active (e.g. <code>Cue 5 Go</code>, <code>M1</code>). Leave blank to skip. Configure the client site &amp; host on each Studio.</p>'
+    +'</div>'
+    +'<hr class="sep">'
     +'<div class="slabel">Now Playing Source</div>'
     +'<div class="field"><label>Source</label>'
     +'<select id="f-npsrc-'+s.id+'" data-np-sel="'+s.id+'">'
@@ -1519,6 +1572,8 @@ function _saveSd(sid){
     name:_v('sd-name-'+sid)||sd.name,
     station_id:_v('sd-st-'+sid)||'',
     sb_studio_id:_v('sd-sbst-'+sid)||'',
+    cueserver_site:_v('sd-cs-site-'+sid)||'',
+    cueserver_host:_v('sd-cs-host-'+sid)||'',
   }).then(function(r){return r.json();}).then(function(d){
     if(d.error){_msg(d.error,false);return;}
     Object.assign(sd,d.studio); renderStudios(); renderApiRef(); _msg('Saved.',true);
@@ -1559,6 +1614,7 @@ function _saveSt(sid){
     np_api_url:_v('f-npurl-'+sid)||'', np_api_title_path:_v('f-nptpath-'+sid)||'',
     np_api_artist_path:_v('f-npapath-'+sid)||'', np_manual:_v('f-npman-'+sid)||'',
     message:_v('f-msg-'+sid)||'',
+    cueserver_cmd:_v('f-csCmd-'+sid)||'',
   };
   _post('/api/brandscreen/station/'+sid, data).then(function(r){return r.json();}).then(function(d){
     if(d.error){_msg(d.error,false);return;}
@@ -1889,6 +1945,15 @@ fetch('/api/studioboard/data',{credentials:'same-origin'})
   .then(function(d){
     _sbStudios=(d.studios||[]).map(function(s){return{id:s.id,name:s.name||s.id};});
     _sbStudios.sort(function(a,b){return a.name<b.name?-1:1;});
+    renderStudios();
+  });
+
+// Fetch connected hub sites for CueServer client-site dropdown
+var _hubSites=[];
+fetch('/api/brandscreen/hub_sites',{credentials:'same-origin'})
+  .then(function(r){return r.ok?r.json():{};}).catch(function(){return{};})
+  .then(function(d){
+    _hubSites=(d.sites||[]);
     renderStudios();
   });
 </script>
@@ -2921,6 +2986,8 @@ def register(app, ctx):
         studio["station_id"] = station_id
         _cfg_save(cfg)
         _notify_studio(studio_id)
+        # CueServer — trigger LED scene for the newly assigned station
+        _cueserver_trigger(studio, _get_station(cfg, station_id) if station_id else None)
         return jsonify({"ok": True, "studio_id": studio_id, "station_id": station_id})
 
     # ── Schedule CRUD ─────────────────────────────────────────────────────────
@@ -3066,7 +3133,7 @@ def register(app, ctx):
         if not s:
             return jsonify({"error": "Studio not found"}), 404
         data = request.get_json(force=True) or {}
-        for k in ("name", "station_id", "sb_studio_id"):
+        for k in ("name", "station_id", "sb_studio_id", "cueserver_site", "cueserver_host"):
             if k in data:
                 s[k] = data[k]
         _cfg_save(cfg)
@@ -3120,7 +3187,7 @@ def register(app, ctx):
             "bg_style", "logo_anim", "show_clock", "show_on_air", "show_now_playing",
             "level_key", "np_source", "np_zetta_key", "np_api_url",
             "np_api_title_path", "np_api_artist_path", "np_manual", "message",
-            "full_screen_logo",
+            "full_screen_logo", "cueserver_cmd",
         ]
         for k in allowed:
             if k in data:
@@ -3276,3 +3343,64 @@ def register(app, ctx):
         cfg["api_key"] = str(uuid.uuid4()).replace("-", "")
         _cfg_save(cfg)
         return jsonify({"ok": True, "api_key": cfg["api_key"]})
+
+    # ── CueServer: list hub sites (for studio config dropdown) ────────────────
+    @app.get("/api/brandscreen/hub_sites")
+    @login_required
+    def bs_hub_sites():
+        """Return the names of all approved client sites connected to this hub."""
+        try:
+            sites = sorted(
+                name for name, data in (hub_server._sites or {}).items()
+                if data.get("_approved")
+            )
+        except Exception:
+            sites = []
+        return jsonify({"sites": sites})
+
+    # ── CueServer: hub poll endpoint (called by client poller thread) ─────────
+    @app.get("/api/brandscreen/cueserver_cmd")
+    def bs_cueserver_cmd_poll():
+        """Return and consume the pending CueServer command for the requesting site.
+
+        Client nodes authenticate by including X-Site header (same as heartbeat).
+        The hub checks _approved before returning — unauthorised sites get 403.
+        """
+        site = (request.headers.get("X-Site") or "").strip()
+        if not site:
+            return jsonify({}), 400
+        sdata = (hub_server._sites or {}).get(site, {})
+        if not sdata.get("_approved"):
+            return jsonify({}), 403
+        with _cs_lock:
+            cmd = _cs_pending.pop(site, None)
+        if not cmd:
+            return jsonify({})
+        return jsonify({"host": cmd["host"], "cmd": cmd["cmd"]})
+
+    # ── CueServer: client poller thread ──────────────────────────────────────
+    # Only starts on client nodes.  Polls the hub every 5 s, and when a command
+    # is available fires the CGI call to the local CueServer appliance.
+    import urllib.parse as _urlparse_cs
+    _cs_cfg    = monitor.app_cfg
+    _cs_mode   = getattr(getattr(_cs_cfg, "hub", None), "mode", "standalone") or "standalone"
+    _cs_hub    = (getattr(getattr(_cs_cfg, "hub", None), "hub_url",   "") or "").rstrip("/")
+    _cs_site   = (getattr(getattr(_cs_cfg, "hub", None), "site_name", "") or "").strip()
+
+    if _cs_mode == "client" and _cs_hub and _cs_site:
+        def _cueserver_client_poller():
+            import urllib.request as _ureq
+            _poll_url = f"{_cs_hub}/api/brandscreen/cueserver_cmd"
+            while True:
+                try:
+                    _time.sleep(5)
+                    req = _ureq.Request(_poll_url, headers={"X-Site": _cs_site})
+                    with _ureq.urlopen(req, timeout=8) as resp:
+                        d = json.loads(resp.read())
+                    if d.get("host") and d.get("cmd"):
+                        cs_url = f"http://{d['host']}/exe.cgi?{_urlparse_cs.urlencode({'cmd': d['cmd']})}"
+                        _ureq.urlopen(cs_url, timeout=5).close()
+                except Exception:
+                    pass
+        threading.Thread(target=_cueserver_client_poller, daemon=True,
+                         name="bs-cueserver-poll").start()
