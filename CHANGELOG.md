@@ -2,6 +2,32 @@
 
 ---
 
+### Brand Screen plugin v1.3.20 — 2026-04-30
+
+**CueServer scene browser, DMX colour preview, and one-click scene creation**
+
+Extends the CueServer LED integration with full scene management from the admin panel.
+
+**Studio config additions:**
+- **DMX R/G/B channels** — three number fields specifying which DMX channels carry the red, green, and blue values for this studio's LED rig (e.g. 1/2/3 for a standard RGB fixture starting at channel 1).
+- **🔍 Fetch Scenes** button — queries `/get.cgi?req=csi` on the CueServer appliance via the client node and renders the full cue list (cue number + name) directly in the studio config panel. Updates within ~10 s. Results are cached per studio so the brand form can show them immediately when you select that studio.
+
+**Brand/Station form additions (CueServer LED section):**
+- **Studio dropdown** — pick which studio's CueServer to use for preview/record (only studios with a configured CueServer host appear).
+- **Cue number** field — enter the cue number to record. A "Use" button on each row of the cached scene list fills this field so you can pick an existing cue to overwrite.
+- **💡 Preview on LEDs** — sends the brand colour to the configured DMX R/G/B channels *without* recording anything. LEDs update within ~5 s. Useful for checking the colour looks right before committing.
+- **📋 Save as Cue → fill command** — sets the DMX channels to the brand colour, sends `Record Cue N`, and automatically fills the "Command string" field with `Cue N Go`. One click creates the scene and wires it up.
+- **Colour swatch** — live preview of the brand colour that will be sent to the DMX channels; updates when the brand colour picker changes.
+
+**Backend:**
+- New admin action endpoint: `POST /api/brandscreen/cueserver_action/<studio_id>` (actions: `poll_scenes`, `preview_colour`, `record_cue`)
+- New result post-back: `POST /api/brandscreen/cueserver_result_post` (called by client)
+- New result poll: `GET /api/brandscreen/cueserver_result/<studio_id>` (polled by admin browser)
+- Hub poll endpoint updated to serve admin commands before brand-change fire commands
+- Client poller handles all action types; uses `_parse_cue_list_xml()` for best-effort XML parsing against any CueServer schema variant
+
+---
+
 ### Brand Screen plugin v1.3.19 — 2026-04-30
 
 **CueServer LED integration**

@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.19",
+    "version":  "1.3.20",
 }
 
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -41,9 +41,17 @@ _schedule_state: dict = {}   # studio_id → {pre_station_id, active_schedule_id
 _SCHED_LOCK = threading.Lock()
 
 # ─────────────────────────────────── CueServer pending commands ───────────────
-# site_name → {"host": str, "cmd": str}  — latest command to send via that site
+# site_name → {"host": str, "cmd": str}  — latest brand-change command per site
 _cs_pending: dict = {}
 _cs_lock    = threading.Lock()
+# Admin-initiated command queue: site → list[{action, host, ...}]
+# Popped from the front by the client poller; responses stored in _cs_result.
+_cs_admin_queue: dict = {}
+_cs_admin_lock  = threading.Lock()
+# Latest CueServer result per site, posted back by the client.
+# site → {ts, action, data, error}
+_cs_result: dict = {}
+_cs_result_lock = threading.Lock()
 
 os.makedirs(_LOGO_DIR, exist_ok=True)
 
@@ -109,6 +117,9 @@ def _new_studio():
         "sb_studio_id":    "",   # linked studioboard studio for mic-live detection
         "cueserver_site": "",    # hub site name where CueServer lives
         "cueserver_host": "",    # CueServer hostname / IP on that site's LAN
+        "cs_dmx_r":       1,     # DMX channel for Red (1–512)
+        "cs_dmx_g":       2,     # DMX channel for Green (1–512)
+        "cs_dmx_b":       3,     # DMX channel for Blue (1–512)
     }
 
 def _ensure_api_key(cfg):
@@ -272,6 +283,56 @@ def _cueserver_trigger(studio, station):
         return
     with _cs_lock:
         _cs_pending[cs_site] = {"host": cs_host, "cmd": cs_cmd}
+
+def _cs_colour_cmd(hex_colour, r_ch, g_ch, b_ch):
+    """Build the CueScript command that sets RGB DMX channels from a hex colour.
+
+    CueScript uses percentage values (0–100), so 255 → 100, 128 → 50, etc.
+    Example result: "Channel 1 At 9 Channel 2 At 66 Channel 3 At 100"
+    """
+    r, g, b = _hex_rgb(hex_colour)
+    r_pct = round(r / 255 * 100)
+    g_pct = round(g / 255 * 100)
+    b_pct = round(b / 255 * 100)
+    return (f"Channel {r_ch} At {r_pct} "
+            f"Channel {g_ch} At {g_pct} "
+            f"Channel {b_ch} At {b_pct}")
+
+def _parse_cue_list_xml(raw):
+    """Best-effort parser for CueServer's /get.cgi?req=csi XML response.
+
+    CueServer's schema is not fully documented, so we try every common variant:
+    - <cue num="N" label="…" />
+    - <cue id="N" name="…" />
+    - <cue number="N" title="…" />
+    Returns a sorted list of {"num": str, "label": str} dicts.
+    """
+    cues = []
+    try:
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(raw)
+        for elem in root.iter():
+            num = next(
+                (elem.get(k, "").strip() for k in ("num", "id", "number", "cue")
+                 if elem.get(k, "").strip()), None
+            )
+            if not num:
+                continue
+            try:
+                float(num)         # ensure it's actually numeric
+            except ValueError:
+                continue
+            label = next(
+                (elem.get(k, "").strip() for k in ("label", "name", "title", "text")
+                 if elem.get(k, "").strip()), ""
+            )
+            cues.append({"num": num, "label": label or f"Cue {num}"})
+    except Exception:
+        pass
+    # Deduplicate and sort numerically
+    seen: set = set()
+    deduped = [c for c in cues if not (c["num"] in seen or seen.add(c["num"]))]
+    return sorted(deduped, key=lambda c: float(c["num"]))
 
 # Start mic monitor thread once at plugin load
 threading.Thread(target=_mic_monitor_loop, daemon=True, name="bs-mic-monitor").start()
@@ -1048,8 +1109,14 @@ main{max-width:960px;margin:0 auto;padding:20px 16px}
 .sc-body{padding:14px;border-top:1px solid var(--bor);display:none}.sc-body.open{display:block}
 .field{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
 .field label{font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-input[type=text],input[type=url],select{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px;font-family:inherit;width:100%}
-input[type=text]:focus,input[type=url]:focus,select:focus{border-color:var(--acc);outline:none}
+input[type=text],input[type=url],input[type=number],select{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px;font-family:inherit;width:100%}
+input[type=text]:focus,input[type=url]:focus,input[type=number]:focus,select:focus{border-color:var(--acc);outline:none}
+.cs-scene-list{width:100%;border-collapse:collapse;font-size:11px}
+.cs-scene-list th{color:var(--mu);font-size:10px;text-transform:uppercase;letter-spacing:.04em;padding:4px 6px;border-bottom:1px solid var(--bor);text-align:left}
+.cs-scene-list td{padding:3px 6px;border-bottom:1px solid rgba(23,52,95,.3)}
+.cs-scene-list tr:hover td{background:rgba(23,52,95,.35);cursor:pointer}
+.cs-scene-list .cue-num{font-family:monospace;color:var(--acc);min-width:40px}
+.cs-scene-list .cue-use{font-size:10px;color:var(--acc);cursor:pointer;padding:1px 6px;border:1px solid var(--acc);border-radius:4px;background:transparent;font-family:inherit}
 input[type=color]{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:2px 4px;height:32px;cursor:pointer;width:100%}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
@@ -1384,7 +1451,7 @@ function _studioForm(sd){
     +'</div>'
     +'<hr class="sep">'
     +'<div class="slabel">CueServer LED Integration</div>'
-    +'<div class="grid2" style="margin-bottom:12px">'
+    +'<div class="grid2" style="margin-bottom:8px">'
     +'<div class="field"><label>Client Site</label>'
     +'<select id="sd-cs-site-'+sd.id+'"><option value="">— none —</option>'+csHubSiteOpts+'</select>'
     +'<p class="hint" style="margin-top:4px">The SignalScope client node that is on the same LAN as the CueServer appliance for this studio.</p>'
@@ -1393,6 +1460,21 @@ function _studioForm(sd){
     +'<input type="text" id="sd-cs-host-'+sd.id+'" value="'+_esc(sd.cueserver_host||'')+'" placeholder="192.168.1.50">'
     +'<p class="hint" style="margin-top:4px">IP address or hostname of the CueServer appliance on the studio LAN.</p>'
     +'</div>'
+    +'</div>'
+    +'<div class="slabel" style="margin-bottom:6px">DMX Channels (R / G / B)</div>'
+    +'<div class="grid3" style="margin-bottom:12px">'
+    +'<div class="field"><label>Red Channel</label>'
+    +'<input type="number" id="sd-cs-r-'+sd.id+'" value="'+(sd.cs_dmx_r||1)+'" min="1" max="512" style="width:100%"></div>'
+    +'<div class="field"><label>Green Channel</label>'
+    +'<input type="number" id="sd-cs-g-'+sd.id+'" value="'+(sd.cs_dmx_g||2)+'" min="1" max="512" style="width:100%"></div>'
+    +'<div class="field"><label>Blue Channel</label>'
+    +'<input type="number" id="sd-cs-b-'+sd.id+'" value="'+(sd.cs_dmx_b||3)+'" min="1" max="512" style="width:100%"></div>'
+    +'</div>'
+    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+    +'<button class="btn bg bs" data-action="cs-fetch-scenes" data-sid="'+sd.id+'">🔍 Fetch Scenes</button>'
+    +'<span id="sd-cs-status-'+sd.id+'" style="font-size:11px;color:var(--mu)"></span>'
+    +'</div>'
+    +'<div id="sd-cs-scenes-'+sd.id+'" style="display:none;margin-bottom:12px">'
     +'</div>'
     +'<div class="slabel">Screen URL</div>'
     +'<div class="tok-row" style="margin-bottom:6px"><input type="text" value="'+_esc(sd.token)+'" readonly>'
@@ -1515,11 +1597,33 @@ function _stationForm(s){
     +'</div>'
     +'<p class="hint" style="margin-top:5px">PNG with transparent background recommended. SVG, JPG, WebP also supported.</p>'
     +'<hr class="sep">'
-    +'<div class="slabel">CueServer LED Command</div>'
-    +'<div class="field">'
+    +'<div class="slabel">CueServer LED</div>'
+    +'<div class="field" style="margin-bottom:8px">'
     +'<label>Command string</label>'
     +'<input type="text" id="f-csCmd-'+s.id+'" value="'+_esc(s.cueserver_cmd||'')+'" placeholder="Cue 5 Go">'
-    +'<p class="hint" style="margin-top:4px">CueServer CGI command sent when this brand becomes active (e.g. <code>Cue 5 Go</code>, <code>M1</code>). Leave blank to skip. Configure the client site &amp; host on each Studio.</p>'
+    +'<p class="hint" style="margin-top:4px">CueServer CGI command fired when this brand becomes active (e.g. <code>Cue 5 Go</code>, <code>M1</code>). Leave blank to skip.</p>'
+    +'</div>'
+    +'<div style="background:rgba(23,52,95,.3);border:1px solid var(--bor);border-radius:8px;padding:12px;margin-bottom:4px">'
+    +'<div class="slabel" style="margin-bottom:8px;font-size:10px">Create / preview scene from brand colour</div>'
+    +'<div class="grid2" style="margin-bottom:8px">'
+    +'<div class="field"><label>Studio</label>'
+    +'<select id="f-cs-studio-'+s.id+'" data-cs-st-sel="'+s.id+'">'
+    +'<option value="">— choose studio —</option>'
+    +_studios.filter(function(sd){return sd.cueserver_site&&sd.cueserver_host;}).map(function(sd){
+      return '<option value="'+_esc(sd.id)+'">'+_esc(sd.name)+'</option>';
+    }).join('')
+    +'</select></div>'
+    +'<div class="field"><label>Cue number</label>'
+    +'<input type="number" id="f-cs-cue-'+s.id+'" min="1" max="9999" placeholder="e.g. 5" style="width:100%"></div>'
+    +'</div>'
+    +'<div id="f-cs-scenes-'+s.id+'" style="margin-bottom:8px;display:none"></div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+    +'<span style="font-size:11px;color:var(--mu)">Brand colour:</span>'
+    +'<span id="f-cs-swatch-'+s.id+'" style="width:22px;height:22px;border-radius:4px;border:1px solid var(--bor);background:'+_esc(s.brand_colour||'#17a8ff')+';flex-shrink:0"></span>'
+    +'<button class="btn bg bs" data-action="cs-preview" data-sid="'+s.id+'">💡 Preview on LEDs</button>'
+    +'<button class="btn bp bs" data-action="cs-record" data-sid="'+s.id+'">📋 Save as Cue → fill command</button>'
+    +'<span id="f-cs-status-'+s.id+'" style="font-size:11px;color:var(--mu)"></span>'
+    +'</div>'
     +'</div>'
     +'<hr class="sep">'
     +'<div class="slabel">Now Playing Source</div>'
@@ -1574,6 +1678,9 @@ function _saveSd(sid){
     sb_studio_id:_v('sd-sbst-'+sid)||'',
     cueserver_site:_v('sd-cs-site-'+sid)||'',
     cueserver_host:_v('sd-cs-host-'+sid)||'',
+    cs_dmx_r:parseInt(_v('sd-cs-r-'+sid)||1,10)||1,
+    cs_dmx_g:parseInt(_v('sd-cs-g-'+sid)||2,10)||2,
+    cs_dmx_b:parseInt(_v('sd-cs-b-'+sid)||3,10)||3,
   }).then(function(r){return r.json();}).then(function(d){
     if(d.error){_msg(d.error,false);return;}
     Object.assign(sd,d.studio); renderStudios(); renderApiRef(); _msg('Saved.',true);
@@ -1669,6 +1776,125 @@ function _regenApiKey(){
   });
 }
 
+// ── CueServer admin helpers ────────────────────────────────────────────────
+var _csSceneCache={};   // studio_id → [{num,label}]
+
+function _csRenderScenes(scenes, containerId, onClickCue){
+  var el=document.getElementById(containerId); if(!el) return;
+  if(!scenes||!scenes.length){
+    el.innerHTML='<p style="font-size:11px;color:var(--mu);margin:0">No cues found — the cue stack may be empty.</p>';
+    el.style.display='block'; return;
+  }
+  var rows=scenes.map(function(c){
+    return '<tr>'
+      +'<td class="cue-num">'+_esc(c.num)+'</td>'
+      +'<td>'+_esc(c.label)+'</td>'
+      +(onClickCue?'<td><button class="cue-use" data-cue-num="'+_esc(c.num)+'">Use</button></td>':'')
+      +'</tr>';
+  }).join('');
+  el.innerHTML='<table class="cs-scene-list">'
+    +'<tr><th>Cue</th><th>Name</th>'+(onClickCue?'<th></th>':'')+'</tr>'
+    +rows+'</table>';
+  if(onClickCue){
+    el.querySelectorAll('.cue-use').forEach(function(btn){
+      btn.addEventListener('click',function(){onClickCue(btn.dataset.cueNum);});
+    });
+  }
+  el.style.display='block';
+}
+
+function _csPollResult(studio_id, action, onSuccess, onError, _attempts){
+  _attempts=_attempts||0;
+  if(_attempts>15){if(onError) onError('Timeout — client did not respond in time'); return;}
+  setTimeout(function(){
+    fetch('/api/brandscreen/cueserver_result/'+studio_id,{credentials:'same-origin'})
+      .then(function(r){return r.json();}).catch(function(){return{pending:true};})
+      .then(function(d){
+        if(d.pending){_csPollResult(studio_id,action,onSuccess,onError,_attempts+1); return;}
+        if(d.error){if(onError) onError(d.error); return;}
+        if(d.action!==action){_csPollResult(studio_id,action,onSuccess,onError,_attempts+1); return;}
+        if(onSuccess) onSuccess(d.data);
+      });
+  },2000);
+}
+
+function _csFetchScenes(studio_id){
+  var statusEl=document.getElementById('sd-cs-status-'+studio_id);
+  var scenesEl=document.getElementById('sd-cs-scenes-'+studio_id);
+  if(statusEl) statusEl.textContent='Fetching…';
+  _post('/api/brandscreen/cueserver_action/'+studio_id,{action:'poll_scenes'})
+    .then(function(r){return r.json();}).then(function(d){
+      if(d.error){if(statusEl)statusEl.textContent='Error: '+d.error; return;}
+      _csPollResult(studio_id,'poll_scenes',
+        function(data){
+          var cues=(data&&data.cues)||[];
+          _csSceneCache[studio_id]=cues;
+          _csRenderScenes(cues,'sd-cs-scenes-'+studio_id,null);
+          if(statusEl)statusEl.textContent=cues.length+' cue'+(cues.length===1?'':'s')+' found';
+        },
+        function(err){if(statusEl)statusEl.textContent='Error: '+err;}
+      );
+    }).catch(function(){if(statusEl)statusEl.textContent='Request failed';});
+}
+
+function _csPreview(station_id){
+  var studio_id=_v('f-cs-studio-'+station_id)||'';
+  if(!studio_id){_msg('Pick a studio first',false); return;}
+  var colour=_v('f-brand-'+station_id)||'#17a8ff';
+  var statusEl=document.getElementById('f-cs-status-'+station_id);
+  if(statusEl)statusEl.textContent='Sending…';
+  _post('/api/brandscreen/cueserver_action/'+studio_id,{action:'preview_colour',colour:colour})
+    .then(function(r){return r.json();}).then(function(d){
+      if(d.error){if(statusEl)statusEl.textContent='Error: '+d.error; return;}
+      if(statusEl)statusEl.textContent='Colour sent — LEDs should update within ~5 s';
+    }).catch(function(){if(statusEl)statusEl.textContent='Request failed';});
+}
+
+function _csRecord(station_id){
+  var studio_id=_v('f-cs-studio-'+station_id)||'';
+  if(!studio_id){_msg('Pick a studio first',false); return;}
+  var cue_num=parseInt(_v('f-cs-cue-'+station_id)||'0',10);
+  if(!cue_num||cue_num<1){_msg('Enter a cue number first',false); return;}
+  var colour=_v('f-brand-'+station_id)||'#17a8ff';
+  var statusEl=document.getElementById('f-cs-status-'+station_id);
+  if(statusEl)statusEl.textContent='Recording…';
+  _post('/api/brandscreen/cueserver_action/'+studio_id,{action:'record_cue',colour:colour,cue_num:cue_num})
+    .then(function(r){return r.json();}).then(function(d){
+      if(d.error){if(statusEl)statusEl.textContent='Error: '+d.error; return;}
+      _csPollResult(studio_id,'record_cue',
+        function(data){
+          // Auto-fill the command field
+          var cmdInput=document.getElementById('f-csCmd-'+station_id);
+          if(cmdInput) cmdInput.value='Cue '+cue_num+' Go';
+          if(statusEl)statusEl.textContent='✓ Cue '+cue_num+' recorded — command field updated';
+        },
+        function(err){if(statusEl)statusEl.textContent='Error: '+err;}
+      );
+    }).catch(function(){if(statusEl)statusEl.textContent='Request failed';});
+}
+
+// When the studio dropdown in a brand form changes, show cached scene list
+document.addEventListener('change',function(e){
+  var sel=e.target.closest('[data-cs-st-sel]');
+  if(sel){
+    var station_id=sel.dataset.csStSel;
+    var studio_id=sel.value;
+    var scenesEl=document.getElementById('f-cs-scenes-'+station_id);
+    if(!scenesEl) return;
+    if(!studio_id){scenesEl.style.display='none'; return;}
+    // Show cached scenes if available, otherwise hide
+    var cached=_csSceneCache[studio_id];
+    if(cached&&cached.length){
+      _csRenderScenes(cached,'f-cs-scenes-'+station_id,function(cueNum){
+        var inp=document.getElementById('f-cs-cue-'+station_id);
+        if(inp) inp.value=cueNum;
+      });
+    } else {
+      scenesEl.style.display='none';
+    }
+  }
+});
+
 document.addEventListener('click',function(e){
   var btn=e.target.closest('[data-action]'); if(!btn) return;
   var a=btn.dataset.action, sid=btn.dataset.sid;
@@ -1683,6 +1909,9 @@ document.addEventListener('click',function(e){
   else if(a==='del-logo')    _delLogo(sid);
   else if(a==='copy-api-key')  _copyApiKey();
   else if(a==='regen-api-key') _regenApiKey();
+  else if(a==='cs-fetch-scenes') _csFetchScenes(sid);
+  else if(a==='cs-preview')      _csPreview(sid);
+  else if(a==='cs-record')       _csRecord(sid);
   else if(a==='takeover-send'){
     var _toTitle=(_v('sd-to-title-'+sid)||'').trim();
     var _toText=(_v('sd-to-text-'+sid)||'').trim();
@@ -1737,6 +1966,12 @@ function _checkOnboard(){
 })();
 document.addEventListener('change',function(e){
   if(e.target.dataset.npSel) _npSrcChanged(e.target.dataset.npSel);
+  // Keep CueServer colour swatch in sync with brand colour picker
+  if(e.target.id&&e.target.id.startsWith('f-brand-')){
+    var _stId=e.target.id.replace('f-brand-','');
+    var sw=document.getElementById('f-cs-swatch-'+_stId);
+    if(sw) sw.style.background=e.target.value;
+  }
 });
 
 // Fetch Zetta stations from status_full (same source as studioboard)
@@ -3133,9 +3368,18 @@ def register(app, ctx):
         if not s:
             return jsonify({"error": "Studio not found"}), 404
         data = request.get_json(force=True) or {}
-        for k in ("name", "station_id", "sb_studio_id", "cueserver_site", "cueserver_host"):
+        for k in ("name", "station_id", "sb_studio_id",
+                  "cueserver_site", "cueserver_host",
+                  "cs_dmx_r", "cs_dmx_g", "cs_dmx_b"):
             if k in data:
-                s[k] = data[k]
+                # DMX channel fields must be integers in range 1–512
+                if k in ("cs_dmx_r", "cs_dmx_g", "cs_dmx_b"):
+                    try:
+                        s[k] = max(1, min(512, int(data[k])))
+                    except (TypeError, ValueError):
+                        pass
+                else:
+                    s[k] = data[k]
         _cfg_save(cfg)
         _notify_studio(studio_id)
         return jsonify({"ok": True, "studio": s})
@@ -3361,10 +3605,11 @@ def register(app, ctx):
     # ── CueServer: hub poll endpoint (called by client poller thread) ─────────
     @app.get("/api/brandscreen/cueserver_cmd")
     def bs_cueserver_cmd_poll():
-        """Return and consume the pending CueServer command for the requesting site.
+        """Return and consume the next CueServer action for the requesting site.
 
-        Client nodes authenticate by including X-Site header (same as heartbeat).
-        The hub checks _approved before returning — unauthorised sites get 403.
+        Admin-initiated actions (poll_scenes, preview_colour, record_cue) take
+        priority over brand-change fire commands.  Client authenticates via
+        X-Site header; hub checks _approved before returning.
         """
         site = (request.headers.get("X-Site") or "").strip()
         if not site:
@@ -3372,15 +3617,135 @@ def register(app, ctx):
         sdata = (hub_server._sites or {}).get(site, {})
         if not sdata.get("_approved"):
             return jsonify({}), 403
+
+        # Admin commands first (FIFO queue)
+        with _cs_admin_lock:
+            queue = _cs_admin_queue.get(site, [])
+            admin_cmd = queue.pop(0) if queue else None
+
+        if admin_cmd:
+            return jsonify(admin_cmd)
+
+        # Brand-change fire command (latest wins)
         with _cs_lock:
             cmd = _cs_pending.pop(site, None)
         if not cmd:
             return jsonify({})
-        return jsonify({"host": cmd["host"], "cmd": cmd["cmd"]})
+        return jsonify({"action": "fire", "host": cmd["host"], "cmd": cmd["cmd"]})
+
+    # ── CueServer: admin action dispatcher ───────────────────────────────────
+    @app.post("/api/brandscreen/cueserver_action/<studio_id>")
+    @login_required
+    @csrf_protect
+    def bs_cueserver_action(studio_id):
+        """Queue an admin-initiated CueServer action for a studio's client site.
+
+        Actions:
+          poll_scenes   — fetch cue list from CueServer (/get.cgi?req=csi)
+          preview_colour — set DMX channels to the brand colour (no record)
+          record_cue    — set DMX + Record Cue N, returns cue number on success
+        """
+        cfg    = _cfg_load()
+        studio = _get_studio(cfg, studio_id)
+        if not studio:
+            return jsonify({"error": "Studio not found"}), 404
+        cs_site = (studio.get("cueserver_site") or "").strip()
+        cs_host = (studio.get("cueserver_host") or "").strip()
+        if not cs_site or not cs_host:
+            return jsonify({"error": "Studio has no CueServer site or host configured"}), 400
+
+        data   = request.get_json(force=True) or {}
+        action = (data.get("action") or "").strip()
+
+        if action == "poll_scenes":
+            cmd = {"action": "poll_scenes", "host": cs_host}
+
+        elif action == "preview_colour":
+            colour = (data.get("colour") or "#ffffff").strip()
+            r_ch = int(studio.get("cs_dmx_r") or 1)
+            g_ch = int(studio.get("cs_dmx_g") or 2)
+            b_ch = int(studio.get("cs_dmx_b") or 3)
+            cmd = {
+                "action":  "preview_colour",
+                "host":    cs_host,
+                "cs_cmd":  _cs_colour_cmd(colour, r_ch, g_ch, b_ch),
+            }
+
+        elif action == "record_cue":
+            colour  = (data.get("colour") or "#ffffff").strip()
+            cue_num = int(data.get("cue_num") or 0)
+            if cue_num <= 0:
+                return jsonify({"error": "Invalid cue number"}), 400
+            r_ch = int(studio.get("cs_dmx_r") or 1)
+            g_ch = int(studio.get("cs_dmx_g") or 2)
+            b_ch = int(studio.get("cs_dmx_b") or 3)
+            cmd = {
+                "action":   "record_cue",
+                "host":     cs_host,
+                "cs_cmd":   _cs_colour_cmd(colour, r_ch, g_ch, b_ch),
+                "cue_num":  cue_num,
+                "studio_id": studio_id,
+            }
+
+        else:
+            return jsonify({"error": f"Unknown action: {action}"}), 400
+
+        with _cs_admin_lock:
+            if cs_site not in _cs_admin_queue:
+                _cs_admin_queue[cs_site] = []
+            _cs_admin_queue[cs_site].append(cmd)
+
+        # Clear any stale result for this site so the poller can detect a fresh one
+        with _cs_result_lock:
+            _cs_result.pop(cs_site, None)
+
+        return jsonify({"ok": True, "site": cs_site, "action": action})
+
+    # ── CueServer: client posts action result back to hub ─────────────────────
+    @app.post("/api/brandscreen/cueserver_result_post")
+    def bs_cueserver_result_post():
+        """Called by the client poller after executing an admin action.
+
+        Stores the result so the admin browser can retrieve it via the poll endpoint.
+        Authentication: X-Site header + _approved check.
+        """
+        site = (request.headers.get("X-Site") or "").strip()
+        if not site:
+            return jsonify({}), 400
+        sdata = (hub_server._sites or {}).get(site, {})
+        if not sdata.get("_approved"):
+            return jsonify({}), 403
+        body = request.get_json(force=True) or {}
+        with _cs_result_lock:
+            _cs_result[site] = {
+                "ts":     _time.time(),
+                "action": body.get("action", ""),
+                "data":   body.get("data"),
+                "error":  body.get("error", ""),
+            }
+        return jsonify({"ok": True})
+
+    # ── CueServer: admin polls for action result ──────────────────────────────
+    @app.get("/api/brandscreen/cueserver_result/<studio_id>")
+    @login_required
+    def bs_cueserver_result(studio_id):
+        """Return the latest CueServer result for a studio's client site."""
+        cfg    = _cfg_load()
+        studio = _get_studio(cfg, studio_id)
+        if not studio:
+            return jsonify({"error": "Studio not found"}), 404
+        cs_site = (studio.get("cueserver_site") or "").strip()
+        if not cs_site:
+            return jsonify({"error": "No CueServer site configured"}), 400
+        with _cs_result_lock:
+            result = _cs_result.get(cs_site)
+        if not result:
+            return jsonify({"pending": True})
+        return jsonify({"pending": False, **result})
 
     # ── CueServer: client poller thread ──────────────────────────────────────
     # Only starts on client nodes.  Polls the hub every 5 s, and when a command
-    # is available fires the CGI call to the local CueServer appliance.
+    # is available executes it against the local CueServer appliance.
     import urllib.parse as _urlparse_cs
     _cs_cfg    = monitor.app_cfg
     _cs_mode   = getattr(getattr(_cs_cfg, "hub", None), "mode", "standalone") or "standalone"
@@ -3390,17 +3755,99 @@ def register(app, ctx):
     if _cs_mode == "client" and _cs_hub and _cs_site:
         def _cueserver_client_poller():
             import urllib.request as _ureq
-            _poll_url = f"{_cs_hub}/api/brandscreen/cueserver_cmd"
+            import xml.etree.ElementTree as _ET
+            _poll_url   = f"{_cs_hub}/api/brandscreen/cueserver_cmd"
+            _result_url = f"{_cs_hub}/api/brandscreen/cueserver_result_post"
+
+            def _cs_get(host, path):
+                """GET from CueServer; returns (text, None) or (None, error)."""
+                try:
+                    with _ureq.urlopen(f"http://{host}{path}", timeout=8) as r:
+                        return r.read().decode("utf-8", errors="replace"), None
+                except Exception as e:
+                    return None, str(e)
+
+            def _cs_exe(host, cmd_str):
+                cs_url = f"http://{host}/exe.cgi?{_urlparse_cs.urlencode({'cmd': cmd_str})}"
+                try:
+                    _ureq.urlopen(cs_url, timeout=5).close()
+                    return None
+                except Exception as e:
+                    return str(e)
+
+            def _post_result(action, data=None, error=""):
+                try:
+                    body = json.dumps({"action": action, "data": data, "error": error}).encode()
+                    req  = _ureq.Request(_result_url, data=body, method="POST",
+                                         headers={"Content-Type": "application/json",
+                                                  "X-Site": _cs_site})
+                    _ureq.urlopen(req, timeout=5).close()
+                except Exception:
+                    pass
+
             while True:
                 try:
                     _time.sleep(5)
                     req = _ureq.Request(_poll_url, headers={"X-Site": _cs_site})
                     with _ureq.urlopen(req, timeout=8) as resp:
                         d = json.loads(resp.read())
-                    if d.get("host") and d.get("cmd"):
-                        cs_url = f"http://{d['host']}/exe.cgi?{_urlparse_cs.urlencode({'cmd': d['cmd']})}"
-                        _ureq.urlopen(cs_url, timeout=5).close()
+
+                    if not d:
+                        continue
+
+                    host   = d.get("host", "")
+                    action = d.get("action", "fire")
+
+                    # ── Brand-change fire command ─────────────────────────────
+                    if action == "fire":
+                        cmd = d.get("cmd", "")
+                        if host and cmd:
+                            _cs_exe(host, cmd)
+                        # no response needed
+
+                    # ── Admin: poll CueServer for cue list ────────────────────
+                    elif action == "poll_scenes":
+                        if not host:
+                            continue
+                        raw, err = _cs_get(host, "/get.cgi?req=csi")
+                        if err:
+                            _post_result("poll_scenes", error=err)
+                            continue
+                        cues = _parse_cue_list_xml(raw)
+                        _post_result("poll_scenes", data={"cues": cues, "raw": raw[:2000]})
+
+                    # ── Admin: preview colour on DMX (no record) ──────────────
+                    elif action == "preview_colour":
+                        if not host:
+                            continue
+                        err = _cs_exe(host, d.get("cs_cmd", ""))
+                        _post_result("preview_colour",
+                                     data={"sent": d.get("cs_cmd", "")},
+                                     error=err or "")
+
+                    # ── Admin: set colour + Record Cue N ──────────────────────
+                    elif action == "record_cue":
+                        if not host:
+                            continue
+                        cue_num = d.get("cue_num", 0)
+                        # Step 1: set DMX channels to the colour
+                        err = _cs_exe(host, d.get("cs_cmd", ""))
+                        if err:
+                            _post_result("record_cue", error=f"Set colour failed: {err}")
+                            continue
+                        # Step 2: record the cue (CueServer must be sequential)
+                        err = _cs_exe(host, f"Record Cue {cue_num}")
+                        if err:
+                            _post_result("record_cue", error=f"Record failed: {err}")
+                            continue
+                        _post_result("record_cue", data={
+                            "cue_num":   cue_num,
+                            "colour_cmd": d.get("cs_cmd", ""),
+                            "studio_id": d.get("studio_id", ""),
+                        })
+
                 except Exception:
                     pass
+
         threading.Thread(target=_cueserver_client_poller, daemon=True,
                          name="bs-cueserver-poll").start()
