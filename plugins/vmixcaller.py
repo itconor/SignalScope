@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.7.4",
+    "version": "1.7.5",
 }
 
 import os
@@ -1095,6 +1095,18 @@ def _start_client_thread(monitor, hub_url: str):
                     if updates:
                         _save_cfg(updates)
                         cfg = _load_cfg()   # reload so next iteration uses new values
+                elif fn in ("srs_start", "srs_stop"):
+                    result = _srs_start() if fn == "srs_start" else _srs_stop()
+                    try:
+                        _hub_post(f"{hub_url}/api/vmixcaller/report", site, secret, {
+                            "cmd_result": {
+                                "seq":  cmd["seq"],
+                                "ok":   result["ok"],
+                                "resp": (result.get("msg") or "")[:120],
+                            },
+                        })
+                    except Exception:
+                        pass
                 else:
                     ok, resp = _vmix_fn(cfg, fn,
                                         value=cmd.get("value"), inp=cmd.get("input"),
@@ -1110,12 +1122,19 @@ def _start_client_thread(monitor, hub_url: str):
             if now - last_full_report >= 12.0:
                 last_full_report = now
                 ok_xml, xml_text = _vmix_xml(cfg)
+                _srs_st = _srs_status()
                 report: dict = {
                     "ts":          now,
                     "ok":          ok_xml,
                     "vmix_ip":     cfg.get("vmix_ip",  "127.0.0.1"),
                     "vmix_port":   cfg.get("vmix_port", 8088),
                     "relay_active": _relay_event.is_set(),
+                    "srs": {
+                        "docker_ok":   _srs_st["docker_ok"],
+                        "running":     _srs_st["running"],
+                        "exists":      _srs_st.get("exists", False),
+                        "status_text": _srs_st.get("status_text", ""),
+                    },
                 }
                 if ok_xml:
                     report["version"]      = _vmix_version(xml_text)
@@ -2519,29 +2538,27 @@ _HUB_TPL = r"""<!DOCTYPE html>
 
     <!-- SRS Server management -->
     <div class="card" id="srs-card">
-      <div class="ch">🐳 SRS Server
+      <div class="ch">🐳 SRS Bridge
         <span id="srs-badge" style="margin-left:8px;font-size:10px;padding:2px 8px;border-radius:10px;font-weight:700"></span>
       </div>
       <div class="cb">
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <div style="flex:1;min-width:160px">
-            <div style="font-size:12px;color:var(--mu);margin-bottom:2px">Container status</div>
-            <div id="srs-status-text" style="font-size:13px;color:var(--tx)">Checking…</div>
+        <div id="srs-no-site" style="font-size:12px;color:var(--mu)">Select a site above to manage its SRS bridge.</div>
+        <div id="srs-site-panel" style="display:none">
+          <div style="font-size:11px;color:var(--mu);margin-bottom:8px">Managing SRS on: <strong id="srs-site-label" style="color:var(--tx)"></strong></div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <div style="flex:1;min-width:160px">
+              <div style="font-size:12px;color:var(--mu);margin-bottom:2px">Container status</div>
+              <div id="srs-status-text" style="font-size:13px;color:var(--tx)">Waiting for report…</div>
+            </div>
+            <button class="btn bp bs" id="srs-start-btn" data-srs-action="start" style="display:none">▶ Start SRS</button>
+            <button class="btn bd bs" id="srs-stop-btn" data-srs-action="stop" style="display:none">■ Stop SRS</button>
           </div>
-          <button class="btn bp bs" id="srs-start-btn" data-srs-action="start" style="display:none">▶ Start SRS</button>
-          <button class="btn bd bs" id="srs-stop-btn" data-srs-action="stop" style="display:none">■ Stop SRS</button>
-          <button class="btn bg bs" data-srs-action="refresh" title="Refresh status">↻</button>
+          <div id="srs-msg" style="display:none;margin-top:8px;padding:6px 10px;border-radius:6px;font-size:12px"></div>
+          <p style="font-size:11px;color:var(--mu);margin-top:10px;margin-bottom:0">
+            Queues Start/Stop commands to the selected site. Status updates every ~12 s when the client reports back.
+            Docker must be installed on the client machine. First start pulls the image (~1 min).
+          </p>
         </div>
-        <div id="srs-msg" style="display:none;margin-top:8px;padding:6px 10px;border-radius:6px;font-size:12px"></div>
-        <div id="srs-logs-wrap" style="margin-top:10px;display:none">
-          <div style="font-size:11px;color:var(--mu);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Last 30 log lines</div>
-          <pre id="srs-logs" style="background:#050e20;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;font-size:10px;color:#7dd3fc;max-height:160px;overflow-y:auto;white-space:pre-wrap;margin:0"></pre>
-        </div>
-        <p style="font-size:11px;color:var(--mu);margin-top:10px;margin-bottom:0">
-          Manages the <code>ossrs/srs:5</code> Docker container on this machine.
-          Docker must be installed and the <code>docker</code> command must be accessible to SignalScope.
-          First start may take a minute while the image is pulled.
-        </p>
       </div>
     </div>
   </div>
@@ -2958,7 +2975,7 @@ function loadState(){
   fetch('/api/vmixcaller/state?site='+encodeURIComponent(site),{credentials:'same-origin'})
     .then(function(r){return r.json();})
     .then(function(d){
-      if(!site){setStatus('off','No site selected',0);return;}
+      if(!site){setStatus('off','No site selected',0);updateSrsCard(null,'');return;}
       if(!d.has_data){setStatus('warn','Waiting for '+site+' to report\u2026',0);}
       else if(d.ok){
         var addr=d.vmix_ip?'  \u2014  vMix at '+d.vmix_ip+':'+d.vmix_port:'';
@@ -2976,6 +2993,7 @@ function loadState(){
       renderParticipants(d.participants||[]);
       var pago=document.getElementById('parts-ago');
       if(pago&&d.ts)pago.textContent='updated '+_ago(d.ts);
+      updateSrsCard(d.srs||null, site);
       // Update "● Live" badge once client confirms relay is running
       if(_relayOn&&d.relay_active&&!_relayLive){
         _relayLive=true;
@@ -3076,6 +3094,8 @@ document.addEventListener('DOMContentLoaded',function(){
         initPreview(_videoUrl);
       }
       updateRelayCtrl();
+      updateSrsCard(null, this.value);
+      _srsMsg('',true);
       if(this.value) loadState();
     });
   }
@@ -3088,45 +3108,7 @@ document.addEventListener('DOMContentLoaded',function(){
   window.addEventListener('beforeunload',function(){
     if(_relayOn&&_relaySite) _post('/api/vmixcaller/relay',{site:_relaySite,active:false});
   });
-  // ── SRS Server card ──────────────────────────────────────────────────────────
-  var _srsTimer=null;
-  function srsRefresh(){
-    var txt=document.getElementById('srs-status-text');
-    var badge=document.getElementById('srs-badge');
-    var startBtn=document.getElementById('srs-start-btn');
-    var stopBtn=document.getElementById('srs-stop-btn');
-    var logsWrap=document.getElementById('srs-logs-wrap');
-    var logsEl=document.getElementById('srs-logs');
-    if(txt) txt.textContent='Checking…';
-    fetch('/api/vmixcaller/srs_status',{credentials:'same-origin'})
-      .then(function(r){return r.json();})
-      .then(function(d){
-        if(!d.docker_ok){
-          if(txt) txt.textContent='Docker not found — install Docker to use this feature';
-          if(badge){badge.textContent='unavailable';badge.style.background='#374151';badge.style.color='#9ca3af';}
-          if(startBtn) startBtn.style.display='none';
-          if(stopBtn)  stopBtn.style.display='none';
-          if(logsWrap) logsWrap.style.display='none';
-          return;
-        }
-        var st=d.status_text||'unknown';
-        if(txt) txt.textContent=d.exists?(st.charAt(0).toUpperCase()+st.slice(1)):'Not created';
-        if(badge){
-          if(d.running){badge.textContent='● running';badge.style.background='#052e16';badge.style.color='#22c55e';}
-          else if(d.exists){badge.textContent='● stopped';badge.style.background='#2a0a0a';badge.style.color='#ef4444';}
-          else{badge.textContent='not created';badge.style.background='#374151';badge.style.color='#9ca3af';}
-        }
-        if(startBtn) startBtn.style.display=d.running?'none':'inline-block';
-        if(stopBtn)  stopBtn.style.display=d.running?'inline-block':'none';
-        if(d.logs&&d.logs.trim()){
-          if(logsWrap) logsWrap.style.display='block';
-          if(logsEl){logsEl.textContent=d.logs;logsEl.scrollTop=logsEl.scrollHeight;}
-        } else {
-          if(logsWrap) logsWrap.style.display='none';
-        }
-      })
-      .catch(function(){if(txt) txt.textContent='Status unavailable';});
-  }
+  // ── SRS Server card (hub — reads site SRS from state poll) ──────────────────
   function _srsMsg(txt,ok){
     var el=document.getElementById('srs-msg');
     if(!el) return;
@@ -3136,46 +3118,77 @@ document.addEventListener('DOMContentLoaded',function(){
     el.style.color=ok?'#22c55e':'#ef4444';
     el.style.border='1px solid '+(ok?'#166534':'#991b1b');
   }
-  function srsStart(){
-    _srsMsg('Starting SRS — please wait…',true);
-    document.getElementById('srs-start-btn').disabled=true;
-    var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content
-           ||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
-    fetch('/api/vmixcaller/srs_start',{method:'POST',credentials:'same-origin',
-      headers:{'Content-Type':'application/json','X-CSRFToken':csrf},body:'{}'})
-      .then(function(r){return r.json();})
-      .then(function(d){
-        _srsMsg(d.msg||'',d.ok);
-        document.getElementById('srs-start-btn').disabled=false;
-        setTimeout(srsRefresh,1500);
-      })
-      .catch(function(e){_srsMsg('Error: '+e,false);document.getElementById('srs-start-btn').disabled=false;});
+  function updateSrsCard(srs, site){
+    var noSite=document.getElementById('srs-no-site');
+    var panel=document.getElementById('srs-site-panel');
+    var lbl=document.getElementById('srs-site-label');
+    var txt=document.getElementById('srs-status-text');
+    var badge=document.getElementById('srs-badge');
+    var startBtn=document.getElementById('srs-start-btn');
+    var stopBtn=document.getElementById('srs-stop-btn');
+    if(!site){
+      if(noSite)noSite.style.display='';
+      if(panel)panel.style.display='none';
+      if(badge){badge.textContent='';badge.style.background='';}
+      return;
+    }
+    if(noSite)noSite.style.display='none';
+    if(panel)panel.style.display='';
+    if(lbl)lbl.textContent=site;
+    if(!srs){
+      if(txt)txt.textContent='Waiting for first report…';
+      if(badge){badge.textContent='';badge.style.background='';}
+      if(startBtn)startBtn.style.display='none';
+      if(stopBtn)stopBtn.style.display='none';
+      return;
+    }
+    if(!srs.docker_ok){
+      if(txt)txt.textContent='Docker not found on '+site;
+      if(badge){badge.textContent='unavailable';badge.style.background='#374151';badge.style.color='#9ca3af';}
+      if(startBtn)startBtn.style.display='none';
+      if(stopBtn)stopBtn.style.display='none';
+      return;
+    }
+    var st=srs.status_text||'unknown';
+    if(txt)txt.textContent=srs.exists?(st.charAt(0).toUpperCase()+st.slice(1)):'Not created';
+    if(badge){
+      if(srs.running){badge.textContent='● running';badge.style.background='#052e16';badge.style.color='#22c55e';}
+      else if(srs.exists){badge.textContent='● stopped';badge.style.background='#2a0a0a';badge.style.color='#ef4444';}
+      else{badge.textContent='not created';badge.style.background='#374151';badge.style.color='#9ca3af';}
+    }
+    if(startBtn)startBtn.style.display=srs.running?'none':'inline-block';
+    if(stopBtn)stopBtn.style.display=srs.running?'inline-block':'none';
   }
-  function srsStop(){
-    _srsMsg('Stopping SRS…',true);
-    document.getElementById('srs-stop-btn').disabled=true;
+  function srsSendCmd(action){
+    var site=(document.getElementById('target-site')||{}).value||'';
+    if(!site){_srsMsg('Select a site first',false);return;}
+    _srsMsg((action==='start'?'Starting':'Stopping')+' SRS on '+site+' — command queued…',true);
+    var startBtn=document.getElementById('srs-start-btn');
+    var stopBtn=document.getElementById('srs-stop-btn');
+    if(startBtn)startBtn.disabled=true;
+    if(stopBtn)stopBtn.disabled=true;
     var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content
            ||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
-    fetch('/api/vmixcaller/srs_stop',{method:'POST',credentials:'same-origin',
-      headers:{'Content-Type':'application/json','X-CSRFToken':csrf},body:'{}'})
+    fetch('/api/vmixcaller/srs_cmd',{method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json','X-CSRFToken':csrf},
+      body:JSON.stringify({site:site,action:action})})
       .then(function(r){return r.json();})
       .then(function(d){
-        _srsMsg(d.msg||'',d.ok);
-        document.getElementById('srs-stop-btn').disabled=false;
-        setTimeout(srsRefresh,1500);
+        if(d.ok){_srsMsg('Command sent to '+site+' — status updates in ~12 s',true);}
+        else{_srsMsg(d.error||'Failed',false);}
+        if(startBtn)startBtn.disabled=false;
+        if(stopBtn)stopBtn.disabled=false;
       })
-      .catch(function(e){_srsMsg('Error: '+e,false);document.getElementById('srs-stop-btn').disabled=false;});
+      .catch(function(e){_srsMsg('Error: '+e,false);if(startBtn)startBtn.disabled=false;if(stopBtn)stopBtn.disabled=false;});
   }
   document.getElementById('srs-card').addEventListener('click',function(e){
     var btn=e.target.closest('[data-srs-action]');
     if(!btn) return;
     var act=btn.dataset.srsAction;
-    if(act==='start') srsStart();
-    else if(act==='stop') srsStop();
-    else if(act==='refresh') srsRefresh();
+    if(act==='start') srsSendCmd('start');
+    else if(act==='stop') srsSendCmd('stop');
   });
-  srsRefresh();
-  _srsTimer=setInterval(srsRefresh,15000);
+  updateSrsCard(null, '');
 });
 </script>
 </body>
@@ -3267,6 +3280,34 @@ _CLIENT_TPL = r"""<!DOCTYPE html>
       </div>
     </div>
     {% endif %}
+
+    <!-- SRS Bridge management (local Docker) -->
+    <div class="card" id="srs-card">
+      <div class="ch">🐳 SRS Bridge
+        <span id="srs-badge" style="margin-left:8px;font-size:10px;padding:2px 8px;border-radius:10px;font-weight:700"></span>
+      </div>
+      <div class="cb">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <div style="flex:1;min-width:160px">
+            <div style="font-size:12px;color:var(--mu);margin-bottom:2px">Container status</div>
+            <div id="srs-status-text" style="font-size:13px;color:var(--tx)">Checking…</div>
+          </div>
+          <button class="btn bp bs" id="srs-start-btn" data-srs-action="start" style="display:none">▶ Start SRS</button>
+          <button class="btn bd bs" id="srs-stop-btn" data-srs-action="stop" style="display:none">■ Stop SRS</button>
+          <button class="btn bg bs" data-srs-action="refresh" title="Refresh status">↻</button>
+        </div>
+        <div id="srs-msg" style="display:none;margin-top:8px;padding:6px 10px;border-radius:6px;font-size:12px"></div>
+        <div id="srs-logs-wrap" style="margin-top:10px;display:none">
+          <div style="font-size:11px;color:var(--mu);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Last 30 log lines</div>
+          <pre id="srs-logs" style="background:#050e20;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;font-size:10px;color:#7dd3fc;max-height:160px;overflow-y:auto;white-space:pre-wrap;margin:0"></pre>
+        </div>
+        <p style="font-size:11px;color:var(--mu);margin-top:10px;margin-bottom:0">
+          Manages <code>ossrs/srs:5</code> on this machine. Docker must be installed.
+          First start pulls the image — may take ~1 minute.
+          Once started with <em>--restart unless-stopped</em> it survives reboots automatically.
+        </p>
+      </div>
+    </div>
   </div>
 
   <!-- ── RIGHT: controls ────────────────────────────────────────────────────── -->
@@ -3688,6 +3729,86 @@ function deleteMeeting(btn){
     .catch(function(e){showMsg('Error: '+e,false);});
 }
 
+// ── SRS Bridge management (client — local Docker) ──────────────────────────────
+function srsRefresh(){
+  var txt=document.getElementById('srs-status-text');
+  var badge=document.getElementById('srs-badge');
+  var startBtn=document.getElementById('srs-start-btn');
+  var stopBtn=document.getElementById('srs-stop-btn');
+  var logsWrap=document.getElementById('srs-logs-wrap');
+  var logsEl=document.getElementById('srs-logs');
+  if(txt) txt.textContent='Checking…';
+  fetch('/api/vmixcaller/srs_status',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(!d.docker_ok){
+        if(txt) txt.textContent='Docker not found — install Docker to use this feature';
+        if(badge){badge.textContent='unavailable';badge.style.background='#374151';badge.style.color='#9ca3af';}
+        if(startBtn) startBtn.style.display='none';
+        if(stopBtn)  stopBtn.style.display='none';
+        if(logsWrap) logsWrap.style.display='none';
+        return;
+      }
+      var st=d.status_text||'unknown';
+      if(txt) txt.textContent=d.exists?(st.charAt(0).toUpperCase()+st.slice(1)):'Not created';
+      if(badge){
+        if(d.running){badge.textContent='● running';badge.style.background='#052e16';badge.style.color='#22c55e';}
+        else if(d.exists){badge.textContent='● stopped';badge.style.background='#2a0a0a';badge.style.color='#ef4444';}
+        else{badge.textContent='not created';badge.style.background='#374151';badge.style.color='#9ca3af';}
+      }
+      if(startBtn) startBtn.style.display=d.running?'none':'inline-block';
+      if(stopBtn)  stopBtn.style.display=d.running?'inline-block':'none';
+      if(d.logs&&d.logs.trim()){
+        if(logsWrap) logsWrap.style.display='block';
+        if(logsEl){logsEl.textContent=d.logs;logsEl.scrollTop=logsEl.scrollHeight;}
+      } else {
+        if(logsWrap) logsWrap.style.display='none';
+      }
+    })
+    .catch(function(){if(txt) txt.textContent='Status unavailable';});
+}
+function _srsMsg(txt,ok){
+  var el=document.getElementById('srs-msg');
+  if(!el) return;
+  el.textContent=txt;
+  el.style.display=txt?'block':'none';
+  el.style.background=ok?'#0f2318':'#2a0a0a';
+  el.style.color=ok?'#22c55e':'#ef4444';
+  el.style.border='1px solid '+(ok?'#166534':'#991b1b');
+}
+function srsStart(){
+  _srsMsg('Starting SRS — please wait…',true);
+  var startBtn=document.getElementById('srs-start-btn');
+  if(startBtn) startBtn.disabled=true;
+  var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content
+         ||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
+  fetch('/api/vmixcaller/srs_start',{method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRFToken':csrf},body:'{}'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      _srsMsg(d.msg||'',d.ok);
+      if(startBtn) startBtn.disabled=false;
+      setTimeout(srsRefresh,1500);
+    })
+    .catch(function(e){_srsMsg('Error: '+e,false);if(startBtn) startBtn.disabled=false;});
+}
+function srsStop(){
+  _srsMsg('Stopping SRS…',true);
+  var stopBtn=document.getElementById('srs-stop-btn');
+  if(stopBtn) stopBtn.disabled=true;
+  var csrf=(document.querySelector('meta[name="csrf-token"]')||{}).content
+         ||(document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/)||[])[1]||'';
+  fetch('/api/vmixcaller/srs_stop',{method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-CSRFToken':csrf},body:'{}'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      _srsMsg(d.msg||'',d.ok);
+      if(stopBtn) stopBtn.disabled=false;
+      setTimeout(srsRefresh,1500);
+    })
+    .catch(function(e){_srsMsg('Error: '+e,false);if(stopBtn) stopBtn.disabled=false;});
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded',function(){
   try{if(_videoUrl) initPreview(_videoUrl);}catch(e){}
@@ -3708,6 +3829,20 @@ document.addEventListener('DOMContentLoaded',function(){
   if(pi) pi.addEventListener('keydown',function(e){if(e.key==='Enter') addManual();});
   var mi=document.getElementById('mtg-id');
   if(mi) mi.addEventListener('keydown',function(e){if(e.key==='Enter') joinManual();});
+  // SRS Bridge card
+  var srsCard=document.getElementById('srs-card');
+  if(srsCard){
+    srsCard.addEventListener('click',function(e){
+      var btn=e.target.closest('[data-srs-action]');
+      if(!btn) return;
+      var act=btn.dataset.srsAction;
+      if(act==='start') srsStart();
+      else if(act==='stop') srsStop();
+      else if(act==='refresh') srsRefresh();
+    });
+    srsRefresh();
+    setInterval(srsRefresh,15000);
+  }
 });
 </script>
 </body>
@@ -4676,6 +4811,24 @@ def register(app, ctx):
     @csrf_protect
     def vmixcaller_srs_stop():
         return jsonify(_srs_stop())
+
+    @app.post("/api/vmixcaller/srs_cmd")
+    @login_required
+    @csrf_protect
+    def vmixcaller_srs_cmd():
+        """Hub queues an srs_start or srs_stop command for a remote site."""
+        data   = request.get_json(silent=True) or {}
+        site   = str(data.get("site",   "") or "").strip()
+        action = str(data.get("action", "") or "").strip()
+        if not site or action not in ("start", "stop"):
+            return jsonify({"ok": False,
+                            "error": "site and action (start/stop) required"}), 400
+        with _state_lock:
+            _pending_cmd[site] = {
+                "fn":  f"srs_{action}",
+                "seq": int(time.time() * 1000),
+            }
+        return jsonify({"ok": True, "queued_for": site})
 
     # ── Meeting actions — browser-facing (hub executes / client proxies) ──────
     @app.post("/api/vmixcaller/zoom_action")

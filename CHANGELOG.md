@@ -2,6 +2,28 @@
 
 ---
 
+### vMix Caller 1.7.5 — 2026-04-30
+
+**Feature: Cross-site SRS management — hub controls client SRS; client page is primary surface**
+
+The SRS Bridge card now works across the full hub/client architecture:
+
+**Client page (primary control surface)**
+- Full 🐳 SRS Bridge card with direct local Docker management — Start, Stop, status badge, and live 30-line log viewer
+- Auto-refreshes every 15 s; Start pulls the image on first run (~1 min), subsequent starts are instant
+
+**Hub page (per-site remote control)**
+- SRS card now shows the status for the **selected site** (read from the client's 12 s report)
+- ▶ Start SRS / ■ Stop SRS queue `srs_start` / `srs_stop` commands to the selected client node via the existing command-poll mechanism
+- Status updates within ~12 s after the client executes the command and reports back
+- Card shows "Select a site above" when no site is selected; shows "Docker not found on [site]" if the client doesn't have Docker
+
+**Client thread**
+- Handles `srs_start` / `srs_stop` fn commands from the hub — runs `_srs_start()` / `_srs_stop()` locally and posts result back
+- Includes `srs: {docker_ok, running, exists, status_text}` in every 12 s report to the hub
+
+---
+
 ### vMix Caller 1.7.4 — 2026-04-30
 
 **Feature: SRS Server card — manage Docker SDI bridge from the UI**
