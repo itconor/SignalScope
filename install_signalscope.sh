@@ -559,6 +559,69 @@ install_redsea() {
   fi
 }
 
+install_ndi_sdk_linux() {
+  # Downloads the NDI SDK v6 from Vizrt's CDN (same URL used by DistroAV CI),
+  # extracts it, and installs to /usr/local/NDISDK with libs in /usr/local/lib.
+  # Returns 0 on success, 1 on failure.
+  local NDI_URL="https://downloads.ndi.tv/SDK/NDI_SDK_Linux/Install_NDI_SDK_v6_Linux.tar.gz"
+  local NDI_DEST="/usr/local/NDISDK"
+  local NDI_TMP
+  NDI_TMP=$(mktemp -d)
+
+  # ── Download ─────────────────────────────────────────────────────────────────
+  if [[ "${DEBUG}" -ne 0 ]]; then
+    printf "  Downloading NDI SDK v6 from Vizrt CDN (~50 MB)…\n"
+  fi
+  if ! curl -fsSL --retry 3 --connect-timeout 30 \
+       "${NDI_URL}" -o "${NDI_TMP}/ndi.tar.gz"; then
+    warn "NDI SDK download failed — check internet connection"
+    rm -rf "${NDI_TMP}"
+    return 1
+  fi
+
+  # ── Extract tar → get installer shell script ──────────────────────────────
+  tar xzf "${NDI_TMP}/ndi.tar.gz" -C "${NDI_TMP}"
+  local INSTALLER
+  INSTALLER=$(find "${NDI_TMP}" -maxdepth 1 -name "Install_NDI_SDK*.sh" | head -1)
+  if [[ -z "${INSTALLER}" ]]; then
+    warn "NDI SDK installer not found in archive"
+    rm -rf "${NDI_TMP}"
+    return 1
+  fi
+
+  # ── Run installer non-interactively (auto-accept license) ─────────────────
+  # The installer drops "NDI SDK for Linux/" into the CWD.
+  chmod +x "${INSTALLER}"
+  local NDI_BUILD="${NDI_TMP}/sdk"
+  mkdir -p "${NDI_BUILD}"
+  (cd "${NDI_BUILD}" && yes | "${INSTALLER}" >/dev/null 2>&1 || true)
+
+  # ── Find the extracted SDK directory ────────────────────────────────────
+  local NDI_SDK_SRC
+  NDI_SDK_SRC=$(find "${NDI_BUILD}" -maxdepth 1 -type d | grep -v "^${NDI_BUILD}$" | head -1)
+  if [[ -z "${NDI_SDK_SRC}" || ! -d "${NDI_SDK_SRC}/include" ]]; then
+    warn "NDI SDK include/ not found after install — archive may have changed"
+    rm -rf "${NDI_TMP}"
+    return 1
+  fi
+
+  # ── Install SDK to permanent location ────────────────────────────────────
+  ${SUDO} rm -rf "${NDI_DEST}"
+  ${SUDO} cp -r "${NDI_SDK_SRC}" "${NDI_DEST}"
+
+  # ── Copy shared libs to system path ──────────────────────────────────────
+  local ARCH="x86_64-linux-gnu"
+  [[ "$(uname -m)" == "aarch64" ]] && ARCH="aarch64-linux-gnu"
+  local LIB_DIR="${NDI_DEST}/lib/${ARCH}"
+  if [[ -d "${LIB_DIR}" ]]; then
+    ${SUDO} cp -f "${LIB_DIR}"/libndi.so* /usr/local/lib/ 2>/dev/null || true
+    ${SUDO} ldconfig
+  fi
+
+  rm -rf "${NDI_TMP}"
+  ok "NDI SDK installed → ${NDI_DEST}"
+}
+
 # ─── Version helpers ──────────────────────────────────────────────────────────
 extract_build_version() {
   local file="$1"
@@ -1539,22 +1602,35 @@ main() {
     "aiortc not available — IP Link will use browser-managed WebRTC"
 
   if [[ "${ENABLE_NDI}" == "1" ]]; then
-    # ndi-python has no pre-built Linux wheels on PyPI — it requires the NDI SDK
-    # to be installed separately and then a from-source build.  On Linux we check
-    # whether the NDI SDK runtime is already present; if not, we skip and explain.
     if [[ "$(uname -s)" == "Linux" ]]; then
-      # Check whether ndi-python is already importable (user installed manually)
+      # Check whether ndi-python is already importable (manual install or prior run)
       if source "${VENV_DIR}/bin/activate" && python -c "import ndi" &>/dev/null; then
-        _pf "NDI Python" "already installed" ""
+        ok "ndi-python already installed"
       else
-        # NDI SDK not found — skip with guidance
-        printf "  ${YELLOW}⚠${NC}  NDI Python — skipped on Linux (NDI SDK not installed)\n"
-        printf "       To enable: install NDI SDK from https://ndi.tv/sdk/\n"
-        printf "       then: CMAKE_ARGS=\"-DNDI_SDK_DIR=/usr/local/NDISDK\" pip install ndi-python\n"
-        printf "       vMix Caller will use SRT bridge mode in the meantime.\n"
+        # ndi-python has no pre-built Linux wheels — needs NDI SDK + source build.
+        # Install build deps, download NDI SDK from Vizrt CDN, then compile.
+        rq "Installing NDI build dependencies" \
+          "${SUDO} apt-get install -y --no-install-recommends \
+             cmake build-essential python3-dev pybind11-dev libavahi-client-dev \
+             >/dev/null 2>&1"
+
+        rq_opt "Downloading and installing NDI SDK v6  (~50 MB)" \
+          "install_ndi_sdk_linux" \
+          "NDI SDK install failed — vMix Caller will use SRT bridge mode"
+
+        # Only attempt ndi-python build if the SDK headers landed successfully
+        if [[ -d "/usr/local/NDISDK/include" ]]; then
+          rq_opt "Building ndi-python from source  (may take a minute)" \
+            "source '${VENV_DIR}/bin/activate' && \
+             CMAKE_ARGS='-DNDI_SDK_DIR=/usr/local/NDISDK' \
+             python -m pip install --quiet --no-binary :all: ndi-python" \
+            "ndi-python build failed — vMix Caller will use SRT bridge mode"
+        else
+          warn "NDI SDK not found at /usr/local/NDISDK — skipping ndi-python build"
+        fi
       fi
     else
-      # macOS / other: attempt pip install (wheels may be available)
+      # macOS / other: attempt pip install (pre-built wheels available for ARM64)
       rq_opt "Installing NDI Python bindings  (ndi-python)" \
         "source '${VENV_DIR}/bin/activate' && python -m pip install --quiet ndi-python" \
         "ndi-python not available — vMix Caller will use SRT bridge mode"
