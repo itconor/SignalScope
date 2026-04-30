@@ -38,6 +38,18 @@ Brand Screen registers `/api/brandscreen/` so producer logins can change studio 
 
 ---
 
+### Brand Screen plugin v1.3.18 — 2026-04-30
+
+**Producer view: brand upload + inline logo for one-off schedules**
+
+- **Brands section**: between the studio cards and the schedules, producers now see all configured brands as a visual grid (logo + name in brand colour). Below it, an "Upload a new brand" collapsible form — enter a name, drag or click to pick a logo, press Upload. Creates the brand with `full_screen_logo=true` (full-screen logo mode) and sensible defaults; no colour pickers, animation settings, or NP config exposed.
+- **One-off schedule — upload inline**: when creating a one-off scheduled change, after picking the date a toggle appears: **"Use an existing brand"** (dropdown as before) vs **"Upload a logo for this event"**. Choosing the upload option shows a name field and a logo drop-zone. On save the brand is created and the logo uploaded automatically before the schedule is written — the whole thing happens in one click.
+- All uploaded brands always use full-screen logo mode. No complex settings visible to the producer.
+- File inputs use drag-and-drop areas (click or drag); filename confirmation shown when a file is selected.
+- Schedule selects re-populated automatically after a brand is uploaded so the new brand appears immediately.
+
+---
+
 ### Brand Screen plugin v1.3.17 — 2026-04-30
 
 **Fix producer view blank on load**
