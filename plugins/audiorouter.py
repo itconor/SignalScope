@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/audiorouter",
     "icon":     "🔀",
     "hub_only": True,
-    "version":  "1.1.1",
+    "version":  "1.1.2",
 }
 
 import hashlib
@@ -910,7 +910,7 @@ def register(app, ctx):
 
     # ── Client: start routing daemon thread ───────────────────────────────────
 
-    if is_client or mode in ("both", "standalone"):
+    if is_client or mode in ("hub", "both", "standalone"):
         _effective_hub_url = hub_url if is_client else _self_url(cfg_ss)
 
         def _client_router_thread():

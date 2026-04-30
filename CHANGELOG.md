@@ -2,6 +2,20 @@
 
 ---
 
+### Audio Router 1.1.2 — 2026-04-30
+
+**Fix: client thread not starting on hub-mode nodes**
+
+- The routing client thread only started when `mode` was `client`, `both`,
+  or `standalone`. Pure `hub` mode was excluded, so hub machines could
+  never execute routes involving their own streams — the thread never ran,
+  no log messages appeared, and all routes stayed "idle" indefinitely.
+- Fix: `hub` mode is now included in the condition. The hub polls itself
+  via its own loopback URL and executes local/source/dest roles for any
+  routes where the hub's `site_name` is the source or destination.
+
+---
+
 ### Audio Router 1.1.1 — 2026-04-30
 
 **Fix: routes stuck at "idle"**
