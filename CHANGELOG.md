@@ -38,6 +38,20 @@ Brand Screen registers `/api/brandscreen/` so producer logins can change studio 
 
 ---
 
+### Brand Screen plugin v1.3.16 — 2026-04-30
+
+**Simplified producer view for non-admin logins**
+
+Producer/plugin-role users now see a purpose-built UI instead of the full admin interface:
+
+- **"What's on each studio right now"**: one card per studio showing the current brand logo, brand name in its colour, and an "active schedule" badge when a scheduled change is running. Each card has a brand dropdown and a **Switch now** button — one click, done.
+- **"Scheduled changes"**: the same schedule list from the admin view (enable/disable toggle, delete), plus an **"Add a scheduled change"** form using plain language — "Studio", "Brand", "Label" instead of technical IDs. Recurring and one-off modes both present.
+- No Stations tab, no REST API tab, no brand configuration, no logo upload, no colour pickers.
+- Admin users continue to see the full interface unchanged.
+- Auto-refreshes every 30 s to pick up schedule activations made by the server.
+
+---
+
 ### Brand Screen plugin v1.3.15 — 2026-04-30
 
 **Producer/plugin-role users get write access to Brand Screen**

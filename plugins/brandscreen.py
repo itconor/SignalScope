@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.15",
+    "version":  "1.3.16",
 }
 
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -408,6 +408,427 @@ def _logo_file(sid):
 def _hex_rgb(h):
     h = (h or "#000000").lstrip("#")
     return int(h[:2], 16), int(h[2:4], 16), int(h[4:], 16)
+
+# ──────────────────────────────────────────── producer template ───────────────
+# Shown to any non-admin (plugin-role) user. Stripped-down: no brand config,
+# no API tab, no studio creation. Just "what's on each screen" + switch + schedule.
+
+_PRODUCER_BS_TPL = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="csrf-token" content="{{csrf_token()}}">
+<title>Brand Screen Control</title>
+<style nonce="{{csp_nonce()}}">
+:root{--bg:#07142b;--sur:#0d2346;--bor:#17345f;--acc:#17a8ff;--ok:#22c55e;--wn:#f59e0b;--al:#ef4444;--tx:#eef5ff;--mu:#8aa4c8}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 100%);color:var(--tx);font-family:system-ui,sans-serif;font-size:14px;min-height:100vh}
+.hdr{background:linear-gradient(180deg,rgba(10,31,65,.97),rgba(9,24,48,.97));border-bottom:1px solid var(--bor);padding:14px 24px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:50;backdrop-filter:blur(8px)}
+.hdr-logo{font-size:22px}.hdr-title{font-size:17px;font-weight:700;letter-spacing:-.02em}.hdr-sub{font-size:11px;color:var(--mu);margin-top:1px}
+.hdr-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.hdr-link{font-size:12px;color:var(--mu);background:rgba(23,52,95,.4);padding:5px 12px;border-radius:20px;border:1px solid var(--bor);text-decoration:none;transition:color .2s}.hdr-link:hover{color:var(--tx)}
+.btn{border:none;border-radius:8px;padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;display:inline-block;text-decoration:none}.btn:hover{filter:brightness(1.15)}
+.bp{background:var(--acc);color:#fff}.bd{background:var(--al);color:#fff}.bg{background:#132040;color:var(--tx)}.bs{font-size:11px;padding:3px 9px}
+main{max-width:1100px;margin:0 auto;padding:24px 20px}
+.sec-title{font-size:11px;font-weight:700;color:var(--mu);text-transform:uppercase;letter-spacing:.1em;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.sec-title::after{content:'';flex:1;height:1px;background:var(--bor)}
+.screen-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-bottom:32px}
+.screen-card{background:var(--sur);border:1px solid var(--bor);border-radius:14px;overflow:hidden;transition:border-color .2s}
+.screen-card.has-sched{border-color:rgba(23,168,255,.45)}
+.sc-top{padding:16px 18px 14px;display:flex;align-items:center;gap:14px}
+.sc-logo-box{width:72px;height:44px;border-radius:8px;background:#071428;border:1px solid var(--bor);display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0}
+.sc-logo-box img{max-width:100%;max-height:100%;object-fit:contain}
+.sc-logo-placeholder{font-size:24px;opacity:.3}
+.sc-info{flex:1;min-width:0}
+.sc-screen-name{font-size:11px;font-weight:600;color:var(--mu);text-transform:uppercase;letter-spacing:.07em;margin-bottom:3px}
+.sc-brand-name{font-size:16px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sc-unassigned{font-size:14px;color:var(--mu);font-style:italic}
+.sc-sched-badge{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:700;background:rgba(23,168,255,.12);color:var(--acc);border:1px solid rgba(23,168,255,.3);border-radius:999px;padding:2px 8px;margin-top:4px}
+.sc-switch{padding:12px 18px 16px;border-top:1px solid var(--bor);background:rgba(0,0,0,.12);display:flex;gap:8px;align-items:center}
+.sc-switch select{flex:1;background:#0d1e40;border:1px solid var(--bor);border-radius:8px;color:var(--tx);padding:7px 10px;font-size:13px;font-family:inherit}.sc-switch select:focus{border-color:var(--acc);outline:none}
+.sc-switch .btn-switch{background:var(--acc);color:#fff;border:none;border-radius:8px;padding:7px 18px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;font-family:inherit}.btn-switch:hover{filter:brightness(1.1)}
+.sc-switch .btn-switch:disabled{opacity:.45;cursor:default;filter:none}
+.msg-box{border-radius:8px;padding:10px 14px;margin-bottom:18px;font-size:12px;display:none}
+.msg-ok{background:#0f2318;color:var(--ok);border:1px solid #166534}
+.msg-err{background:#2a0a0a;color:var(--al);border:1px solid #991b1b}
+.sched-section{margin-bottom:32px}
+.add-sched-card{background:var(--sur);border:1px dashed var(--bor);border-radius:12px;overflow:hidden;margin-bottom:10px}
+.add-sched-toggle{padding:12px 16px;display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;font-weight:600;color:var(--acc);user-select:none}
+.add-sched-toggle:hover{background:rgba(23,168,255,.04)}
+.add-sched-body{padding:16px;border-top:1px solid var(--bor);display:none}
+.field{display:flex;flex-direction:column;gap:5px;margin-bottom:14px}
+.field label{font-size:11px;color:var(--mu);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+.field input,.field select{background:#0d1e40;border:1px solid var(--bor);border-radius:8px;color:var(--tx);padding:8px 11px;font-size:13px;font-family:inherit}
+.field input:focus,.field select:focus{border-color:var(--acc);outline:none}
+input[type=time],input[type=date]{background:#0d1e40;border:1px solid var(--bor);border-radius:8px;color:var(--tx);padding:8px 11px;font-size:13px;font-family:inherit}
+input[type=time]:focus,input[type=date]:focus{border-color:var(--acc);outline:none}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.sched-row{background:var(--sur);border:1px solid var(--bor);border-radius:10px;padding:12px 16px;display:flex;align-items:center;gap:12px;margin-bottom:8px}
+.sched-row.active-sched{border-color:var(--acc)}
+.sched-info{flex:1;min-width:0}
+.sched-name{font-weight:700;font-size:13px;margin-bottom:3px}
+.sched-detail{font-size:12px;color:var(--mu)}
+.sched-badge{font-size:10px;font-weight:700;background:rgba(23,168,255,.18);color:var(--acc);border:1px solid rgba(23,168,255,.35);border-radius:999px;padding:2px 8px;margin-left:6px}
+.sched-badge.oneoff{background:rgba(245,158,11,.15);color:var(--wn);border-color:rgba(245,158,11,.35)}
+.sched-badge.past{background:rgba(239,68,68,.12);color:var(--al);border-color:rgba(239,68,68,.3)}
+.tog{position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0}
+.tog input{opacity:0;width:0;height:0}
+.tog-sl{position:absolute;cursor:pointer;inset:0;background:#1a3060;border-radius:20px;transition:.2s}
+.tog-sl:before{content:"";position:absolute;height:14px;width:14px;left:3px;bottom:3px;background:#8aa4c8;border-radius:50%;transition:.2s}
+.tog input:checked+.tog-sl{background:var(--acc)}
+.tog input:checked+.tog-sl:before{transform:translateX(16px);background:#fff}
+.day-btns{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
+.day-btn{padding:4px 10px;border:1px solid var(--bor);border-radius:6px;background:#0d1e40;color:var(--mu);font-size:12px;font-weight:600;cursor:pointer}
+.day-btn.sel{background:rgba(23,168,255,.2);color:var(--acc);border-color:var(--acc)}
+.stype-btns{display:flex;gap:0;margin-top:6px}
+.stype-btn{padding:5px 14px;border:1px solid var(--bor);background:#0d1e40;color:var(--mu);font-size:12px;font-weight:600;cursor:pointer}
+.stype-btn:first-child{border-radius:6px 0 0 6px}.stype-btn:last-child{border-radius:0 6px 6px 0;border-left:none}
+.stype-btn.sel{background:rgba(23,168,255,.2);color:var(--acc);border-color:var(--acc)}
+.empty-state{text-align:center;padding:40px 24px;color:var(--mu);font-size:13px}
+@media(max-width:600px){main{padding:16px 12px}.sc-switch{flex-wrap:wrap}.sc-switch select{min-width:0}}
+</style>
+</head>
+<body>
+<header class="hdr">
+  <span class="hdr-logo">📺</span>
+  <div>
+    <div class="hdr-title">Brand Screen Control</div>
+    <div class="hdr-sub">Switch brands &amp; manage schedules</div>
+  </div>
+  <div class="hdr-right">
+    {% if has_presenter %}<a href="/producer" class="hdr-link">🎙 Producer View</a>{% endif %}
+    {% if has_listener %}<a href="/listener" class="hdr-link">🎧 Listen</a>{% endif %}
+  </div>
+</header>
+<main>
+  <div id="msg" class="msg-box"></div>
+
+  <!-- ── What's on now ──────────────────────────────────────────────────── -->
+  <div class="sec-title">📺 What's on each studio right now</div>
+  <div class="screen-grid" id="screen-grid">
+    <!-- rendered by JS -->
+  </div>
+
+  <!-- ── Schedules ──────────────────────────────────────────────────────── -->
+  <div class="sec-title">⏰ Scheduled changes</div>
+  <div class="sched-section">
+    <!-- Add schedule form -->
+    <div class="add-sched-card" id="add-sched-wrap">
+      <div class="add-sched-toggle" id="add-sched-toggle">
+        <span>＋ Add a scheduled brand change</span>
+        <span style="margin-left:auto;font-size:11px;color:var(--mu)" id="add-sched-arrow">▼</span>
+      </div>
+      <div class="add-sched-body" id="add-sched-body">
+        <div class="field">
+          <label>Label (so you remember what this is for)</label>
+          <input type="text" id="sf-name" placeholder="e.g. Friday Night Show, Christmas Branding…">
+        </div>
+        <div class="grid2" style="margin-bottom:14px">
+          <div class="field" style="margin-bottom:0">
+            <label>Studio</label>
+            <select id="sf-studio"></select>
+          </div>
+          <div class="field" style="margin-bottom:0">
+            <label>Switch to brand</label>
+            <select id="sf-station"></select>
+          </div>
+        </div>
+        <div class="field" style="margin-bottom:10px">
+          <label>When should this run?</label>
+          <div class="stype-btns" id="sf-type-btns">
+            <button type="button" class="stype-btn sel" data-type="recurring">🔁 Regular (weekly)</button>
+            <button type="button" class="stype-btn" data-type="oneoff">📅 One-off date</button>
+          </div>
+        </div>
+        <div id="sf-recurring-section">
+          <div class="field">
+            <label>Days (leave none selected = every day)</label>
+            <div class="day-btns" id="sf-days">
+              <button type="button" class="day-btn" data-day="mon">Mon</button>
+              <button type="button" class="day-btn" data-day="tue">Tue</button>
+              <button type="button" class="day-btn" data-day="wed">Wed</button>
+              <button type="button" class="day-btn" data-day="thu">Thu</button>
+              <button type="button" class="day-btn" data-day="fri">Fri</button>
+              <button type="button" class="day-btn" data-day="sat">Sat</button>
+              <button type="button" class="day-btn" data-day="sun">Sun</button>
+            </div>
+          </div>
+        </div>
+        <div id="sf-oneoff-section" style="display:none">
+          <div class="field">
+            <label>Date</label>
+            <input type="date" id="sf-date" style="max-width:200px">
+          </div>
+        </div>
+        <div class="grid2" style="margin-bottom:16px">
+          <div class="field" style="margin-bottom:0">
+            <label>Starts at</label>
+            <input type="time" id="sf-start" value="09:00">
+          </div>
+          <div class="field" style="margin-bottom:0">
+            <label>Ends at</label>
+            <input type="time" id="sf-end" value="17:00">
+          </div>
+        </div>
+        <button class="btn bp" id="sf-save-btn" style="width:100%;padding:10px">Save scheduled change</button>
+      </div>
+    </div>
+    <!-- Schedule list -->
+    <div id="sched-list"></div>
+  </div>
+</main>
+
+<script nonce="{{csp_nonce()}}">
+var _studios   = {{studios_json|safe}};
+var _stations  = {{stations_json|safe}};
+var _schedules = {{schedules_json|safe}};
+var _schedActive = {};
+
+function _csrf(){return(document.querySelector('meta[name="csrf-token"]')||{}).content||'';}
+function _post(u,d){return fetch(u,{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},credentials:'same-origin',body:JSON.stringify(d)});}
+function _patch(u,d){return fetch(u,{method:'PATCH',headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},credentials:'same-origin',body:JSON.stringify(d)});}
+function _put(u,d){return fetch(u,{method:'PUT',headers:{'Content-Type':'application/json','X-CSRFToken':_csrf()},credentials:'same-origin',body:JSON.stringify(d)});}
+function _del(u){return fetch(u,{method:'DELETE',headers:{'X-CSRFToken':_csrf()},credentials:'same-origin'});}
+function _esc(s){var d=document.createElement('div');d.appendChild(document.createTextNode(s||''));return d.innerHTML;}
+function _msg(t,ok){
+  var el=document.getElementById('msg');
+  el.className='msg-box '+(ok?'msg-ok':'msg-err');
+  el.textContent=t;el.style.display='block';
+  clearTimeout(el._t);el._t=setTimeout(function(){el.style.display='none';},4000);
+}
+
+// ── Screen grid ──────────────────────────────────────────────────────────────
+function renderScreens(){
+  var el=document.getElementById('screen-grid');
+  if(!_studios.length){
+    el.innerHTML='<div class="empty-state">No studios have been set up yet. Ask your administrator to configure studios in Brand Screen.</div>';
+    return;
+  }
+  el.innerHTML=_studios.map(function(sd){
+    var st=_stations.find(function(s){return s.id===sd.station_id;})||null;
+    var schedEntry=_schedActive[sd.id];
+    var hasSched=!!(schedEntry&&schedEntry.active_schedule_id);
+    var schedBrand=null;
+    if(hasSched){
+      var sc=_schedules.find(function(s){return s.id===schedEntry.active_schedule_id;});
+      schedBrand=sc?_stations.find(function(s){return s.id===sc.station_id;}):null;
+    }
+    var logoHtml=st?'<img src="/api/brandscreen/logo/'+st.id+'?t='+Date.now()+'" alt="" onerror="this.style.display=\'none\'">':'';
+    var logoBox='<div class="sc-logo-box">'+logoHtml+'<span class="sc-logo-placeholder" style="display:'+(st?'none':'flex')+'">📺</span></div>';
+    var brandColour=st?(st.brand_colour||'#17a8ff'):'#17a8ff';
+    var brandName=st?('<span style="color:'+_esc(brandColour)+'">'+_esc(st.name)+'</span>'):'<span class="sc-unassigned">Nothing assigned</span>';
+    var schedBadge=hasSched?'<div class="sc-sched-badge">📅 Scheduled'+(schedBrand?' — showing '+_esc(schedBrand.name):'')+'</div>':'';
+    var stationOpts=_stations.map(function(s){
+      return '<option value="'+s.id+'"'+(sd.station_id===s.id?' selected':'')+'>'+_esc(s.name)+'</option>';
+    }).join('');
+    return '<div class="screen-card'+(hasSched?' has-sched':'')+'" id="scard-'+sd.id+'">'
+      +'<div class="sc-top">'
+      +logoBox
+      +'<div class="sc-info">'
+      +'<div class="sc-screen-name">'+_esc(sd.name)+'</div>'
+      +'<div class="sc-brand-name">'+brandName+'</div>'
+      +schedBadge
+      +'</div></div>'
+      +'<div class="sc-switch">'
+      +'<select id="sw-'+sd.id+'"><option value="">— choose a brand —</option>'+stationOpts+'</select>'
+      +'<button class="btn-switch" data-sdid="'+sd.id+'">Switch now</button>'
+      +'</div></div>';
+  }).join('');
+  // Wire switch buttons
+  el.querySelectorAll('.btn-switch').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      var sdid=this.dataset.sdid;
+      var sel=document.getElementById('sw-'+sdid);
+      var sid=sel?sel.value:'';
+      if(!sid){_msg('Choose a brand first.',false);return;}
+      this.disabled=true;
+      var me=this;
+      _put('/api/brandscreen/studio/'+sdid+'/station',{station_id:sid})
+        .then(function(r){return r.json();})
+        .then(function(d){
+          me.disabled=false;
+          if(!d.ok){_msg(d.error||'Failed to switch.',false);return;}
+          var sd=_studios.find(function(s){return s.id===sdid;});
+          if(sd) sd.station_id=sid;
+          renderScreens();
+          _msg('Switched ✓',true);
+        }).catch(function(){me.disabled=false;_msg('Connection error.',false);});
+    });
+  });
+}
+
+// ── Schedules ────────────────────────────────────────────────────────────────
+function _schedDayLabel(sc){
+  if(sc.date){
+    var d=new Date(sc.date+'T00:00:00');
+    var days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    var months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return days[d.getDay()]+' '+d.getDate()+' '+months[d.getMonth()]+' '+d.getFullYear();
+  }
+  var ds=sc.days||[];
+  if(!ds.length) return 'Every day';
+  var names={mon:'Mon',tue:'Tue',wed:'Wed',thu:'Thu',fri:'Fri',sat:'Sat',sun:'Sun'};
+  return ds.map(function(d){return names[d]||d;}).join(', ');
+}
+function _schedIsPast(sc){
+  if(!sc.date) return false;
+  var today=new Date();today.setHours(0,0,0,0);
+  var d=new Date(sc.date+'T00:00:00');d.setHours(0,0,0,0);
+  return d<today;
+}
+
+function renderSchedules(){
+  var el=document.getElementById('sched-list');
+  if(!_schedules.length){
+    el.innerHTML='<div class="empty-state" style="padding:20px 0;text-align:left;color:var(--mu)">No scheduled changes yet. Use the form above to add one.</div>';
+    return;
+  }
+  var sdMap={};_studios.forEach(function(s){sdMap[s.id]=s.name||s.id;});
+  var stMap={};_stations.forEach(function(s){stMap[s.id]=s.name||s.id;});
+  var html='';
+  _schedules.forEach(function(sc){
+    var isActive=!!_schedActive[sc.studio_id]&&_schedActive[sc.studio_id].active_schedule_id===sc.id;
+    var isOneOff=!!(sc.date);
+    var isPast=_schedIsPast(sc);
+    var badges='';
+    if(isActive) badges+='<span class="sched-badge">ACTIVE NOW</span>';
+    if(isOneOff&&isPast) badges+='<span class="sched-badge past">PAST</span>';
+    else if(isOneOff) badges+='<span class="sched-badge oneoff">ONE-OFF</span>';
+    html+='<div class="sched-row'+(isActive?' active-sched':'')+'" data-sched-id="'+sc.id+'">'
+      +'<div class="sched-info">'
+      +'<div class="sched-name">'+_esc(sc.name||'Unnamed')+badges+'</div>'
+      +'<div class="sched-detail">Studio: <strong>'+_esc(sdMap[sc.studio_id]||sc.studio_id)+'</strong>'
+      +' → Brand: <strong>'+_esc(stMap[sc.station_id]||sc.station_id)+'</strong></div>'
+      +'<div class="sched-detail">'+_schedDayLabel(sc)+' &nbsp;·&nbsp; '
+      +_esc(sc.start_time||'?')+' – '+_esc(sc.end_time||'?')+'</div>'
+      +'</div>'
+      +'<label class="tog" title="Enable/disable">'
+      +'<input type="checkbox" class="sched-tog"'+(sc.enabled?' checked':'')+' data-sid="'+sc.id+'">'
+      +'<span class="tog-sl"></span></label>'
+      +'<button class="btn bd bs sched-del-btn" data-sid="'+sc.id+'">Delete</button>'
+      +'</div>';
+  });
+  el.innerHTML=html;
+  el.querySelectorAll('.sched-tog').forEach(function(cb){
+    cb.addEventListener('change',function(){
+      var sid=this.dataset.sid;
+      _patch('/api/brandscreen/schedule/'+sid,{enabled:this.checked})
+        .then(function(r){return r.json();}).then(function(d){
+          if(!d.ok){_msg('Could not update schedule.',false);return;}
+          var sc=_schedules.find(function(s){return s.id===sid;});
+          if(sc) sc.enabled=cb.checked;
+        });
+    });
+  });
+  el.querySelectorAll('.sched-del-btn').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      var sid=this.dataset.sid;
+      if(!confirm('Delete this scheduled change?')) return;
+      _del('/api/brandscreen/schedule/'+sid)
+        .then(function(r){return r.json();}).then(function(d){
+          if(!d.ok){_msg('Delete failed.',false);return;}
+          _schedules=_schedules.filter(function(s){return s.id!==sid;});
+          renderSchedules();
+        });
+    });
+  });
+}
+
+// Load active schedule state & re-render
+function _loadActive(){
+  fetch('/api/brandscreen/schedules',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){_schedActive=d.active||{};renderScreens();renderSchedules();})
+    .catch(function(){});
+}
+_loadActive();
+setInterval(_loadActive,30000);
+
+// ── Add schedule form ────────────────────────────────────────────────────────
+(function(){
+  // Toggle open/close
+  var tog=document.getElementById('add-sched-toggle');
+  var body=document.getElementById('add-sched-body');
+  var arrow=document.getElementById('add-sched-arrow');
+  tog.addEventListener('click',function(){
+    var open=body.style.display!=='none';
+    body.style.display=open?'none':'block';
+    if(arrow) arrow.textContent=open?'▼':'▲';
+  });
+
+  // Populate selects
+  function _pop(){
+    var ss=document.getElementById('sf-studio');
+    var st=document.getElementById('sf-station');
+    ss.innerHTML='<option value="">— choose a studio —</option>';
+    _studios.forEach(function(s){ss.innerHTML+='<option value="'+s.id+'">'+_esc(s.name||s.id)+'</option>';});
+    st.innerHTML='<option value="">— choose a brand —</option>';
+    _stations.forEach(function(s){st.innerHTML+='<option value="'+s.id+'">'+_esc(s.name||s.id)+'</option>';});
+  }
+  _pop();
+
+  // Default date to today
+  var _t=new Date();
+  document.getElementById('sf-date').value=_t.getFullYear()+'-'+String(_t.getMonth()+1).padStart(2,'0')+'-'+String(_t.getDate()).padStart(2,'0');
+
+  // Type toggle
+  var typeBtns=document.getElementById('sf-type-btns');
+  var recSec=document.getElementById('sf-recurring-section');
+  var oofSec=document.getElementById('sf-oneoff-section');
+  typeBtns.addEventListener('click',function(e){
+    var btn=e.target.closest('.stype-btn');if(!btn) return;
+    typeBtns.querySelectorAll('.stype-btn').forEach(function(b){b.classList.remove('sel');});
+    btn.classList.add('sel');
+    var isOneOff=btn.dataset.type==='oneoff';
+    recSec.style.display=isOneOff?'none':'block';
+    oofSec.style.display=isOneOff?'block':'none';
+  });
+
+  // Day buttons
+  document.getElementById('sf-days').addEventListener('click',function(e){
+    var btn=e.target.closest('.day-btn');if(btn) btn.classList.toggle('sel');
+  });
+
+  // Save
+  document.getElementById('sf-save-btn').addEventListener('click',function(){
+    var name=document.getElementById('sf-name').value.trim();
+    var studio=document.getElementById('sf-studio').value;
+    var station=document.getElementById('sf-station').value;
+    var start=document.getElementById('sf-start').value;
+    var end=document.getElementById('sf-end').value;
+    var selType=document.querySelector('#sf-type-btns .stype-btn.sel');
+    var isOneOff=selType&&selType.dataset.type==='oneoff';
+    var days=isOneOff?[]:
+      [].slice.call(document.querySelectorAll('#sf-days .day-btn.sel')).map(function(b){return b.dataset.day;});
+    var date=isOneOff?(document.getElementById('sf-date').value||''):'';
+    if(!name){_msg('Give this scheduled change a label.',false);return;}
+    if(!studio){_msg('Choose a studio.',false);return;}
+    if(!station){_msg('Choose a brand to switch to.',false);return;}
+    if(isOneOff&&!date){_msg('Pick a date.',false);return;}
+    if(!start||!end){_msg('Set start and end times.',false);return;}
+    if(start>=end){_msg('End time must be after start time.',false);return;}
+    _post('/api/brandscreen/schedule',{name:name,studio_id:studio,station_id:station,days:days,date:date,start_time:start,end_time:end})
+      .then(function(r){return r.json();}).then(function(d){
+        if(!d.ok){_msg(d.error||'Could not save.',false);return;}
+        _schedules.push(d.schedule);
+        renderSchedules();
+        // Reset form
+        document.getElementById('sf-name').value='';
+        document.getElementById('sf-days').querySelectorAll('.day-btn.sel').forEach(function(b){b.classList.remove('sel');});
+        document.getElementById('sf-start').value='09:00';
+        document.getElementById('sf-end').value='17:00';
+        document.querySelectorAll('#sf-type-btns .stype-btn').forEach(function(b){b.classList.remove('sel');});
+        document.querySelector('#sf-type-btns .stype-btn').classList.add('sel');
+        recSec.style.display='block';oofSec.style.display='none';
+        body.style.display='none';if(arrow) arrow.textContent='▼';
+        _msg('Scheduled change saved ✓',true);
+      });
+  });
+})();
+</script>
+</body>
+</html>"""
 
 # ──────────────────────────────────────────────── admin template ──────────────
 
@@ -2220,7 +2641,9 @@ def register(app, ctx):
             pass
         return sorted(streams, key=lambda x: x["label"])
 
-    # ── Admin page ────────────────────────────────────────────────────────────
+    # ── Admin / Producer page ─────────────────────────────────────────────────
+    _STANDARD_ROLES = {"admin", "operator", "viewer"}
+
     @app.get("/hub/brandscreen")
     @login_required
     def bs_admin():
@@ -2229,9 +2652,20 @@ def register(app, ctx):
         for s in stations:
             p, _ = _logo_file(s["id"])
             s["_has_logo"] = p is not None
-        api_key = _ensure_api_key(cfg)
         has_presenter = any(str(r) == "/producer" for r in app.url_map.iter_rules())
         has_listener  = any(str(r) == "/listener"  for r in app.url_map.iter_rules())
+        # Non-admin (plugin-role) users get the simplified producer view
+        role = session.get("role", "admin")
+        if role not in _STANDARD_ROLES:
+            return render_template_string(
+                _PRODUCER_BS_TPL,
+                stations_json=json.dumps(stations),
+                studios_json=json.dumps(cfg.get("studios", [])),
+                schedules_json=json.dumps(cfg.get("schedules", [])),
+                has_presenter=has_presenter,
+                has_listener=has_listener,
+            )
+        api_key = _ensure_api_key(cfg)
         return render_template_string(
             _ADMIN_TPL,
             stations_json=json.dumps(stations),
