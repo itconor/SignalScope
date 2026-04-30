@@ -1539,9 +1539,26 @@ main() {
     "aiortc not available — IP Link will use browser-managed WebRTC"
 
   if [[ "${ENABLE_NDI}" == "1" ]]; then
-    rq_opt "Installing NDI Python bindings  (ndi-python)" \
-      "source '${VENV_DIR}/bin/activate' && python -m pip install --quiet ndi-python" \
-      "ndi-python not available — vMix Caller will use SRT bridge mode"
+    # ndi-python has no pre-built Linux wheels on PyPI — it requires the NDI SDK
+    # to be installed separately and then a from-source build.  On Linux we check
+    # whether the NDI SDK runtime is already present; if not, we skip and explain.
+    if [[ "$(uname -s)" == "Linux" ]]; then
+      # Check whether ndi-python is already importable (user installed manually)
+      if source "${VENV_DIR}/bin/activate" && python -c "import ndi" &>/dev/null; then
+        _pf "NDI Python" "already installed" ""
+      else
+        # NDI SDK not found — skip with guidance
+        printf "  ${YELLOW}⚠${NC}  NDI Python — skipped on Linux (NDI SDK not installed)\n"
+        printf "       To enable: install NDI SDK from https://ndi.tv/sdk/\n"
+        printf "       then: CMAKE_ARGS=\"-DNDI_SDK_DIR=/usr/local/NDISDK\" pip install ndi-python\n"
+        printf "       vMix Caller will use SRT bridge mode in the meantime.\n"
+      fi
+    else
+      # macOS / other: attempt pip install (wheels may be available)
+      rq_opt "Installing NDI Python bindings  (ndi-python)" \
+        "source '${VENV_DIR}/bin/activate' && python -m pip install --quiet ndi-python" \
+        "ndi-python not available — vMix Caller will use SRT bridge mode"
+    fi
   fi
 
   rq_opt "Installing ONNX AI runtime" \
