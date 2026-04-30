@@ -2,6 +2,37 @@
 
 ---
 
+### Audio Router 1.2.7 — 2026-04-30
+
+**Fix: audio skipping on remote/WAN connections — adaptive jitter buffer**
+
+Added `consumer_realtime()` to `_StreamBroadcaster`. Replaces
+`consumer_with_keepalive()` in both the `hub_stream` and `direct_stream`
+endpoints.
+
+**How it works:**
+- Phase 1 (pre-buffer): accumulates `min_buf` chunks before starting output,
+  yielding silence keepalives so nginx proxy_read_timeout is never hit and the
+  HTTP connection stays alive while waiting.
+- Phase 2 (playback): outputs one chunk per 100 ms paced to wall-clock using
+  `time.sleep()`, so ffmpeg on the dest node receives a smooth metered feed
+  regardless of upstream jitter bursts.
+- Adaptive target: on underrun (buffer empty) the target grows by 2 chunks,
+  absorbing more jitter. After 10 consecutive healthy reads it shrinks by 1
+  (floor = min_buf). Buffer self-tunes without user configuration.
+
+**Per-endpoint tuning:**
+- `hub_stream` (WAN relay path): `min_buf=5` (500 ms pre-buffer), `max_buf=30`
+  (3 s ceiling). Starts with more headroom for WAN latency.
+- `direct_stream` (local P2P path): `min_buf=2` (200 ms), `max_buf=20` (2 s).
+  Lower latency for same-LAN connections.
+
+**Also fixed:** `consumer_with_keepalive` silence padding was hardcoded to
+9600 bytes (mono) even though all chunks since 1.2.6 are 19200 bytes (stereo).
+Both methods now detect the correct silence size from the first real chunk.
+
+---
+
 ### Audio Router 1.2.6 — 2026-04-30
 
 **Fix: hub crash cycle and chipmunk audio — _stream_buf_chunks rewrite**

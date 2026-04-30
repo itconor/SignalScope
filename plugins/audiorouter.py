@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/audiorouter",
     "icon":     "🔀",
     "hub_only": True,
-    "version":  "1.2.6",
+    "version":  "1.2.7",
 }
 
 import hashlib
@@ -260,9 +260,9 @@ class _StreamBroadcaster:
         This prevents Waitress from holding a worker thread indefinitely while
         waiting for the first real chunk.  Silence keeps the HTTP connection
         alive and ensures GeneratorExit is delivered promptly when the dest
-        disconnects.  0.1 s silence = 9600 bytes at 48 kHz / 16-bit mono.
+        disconnects.
         """
-        _SILENCE = bytes(9600)
+        _SILENCE = None  # Detected from first real chunk; fallback to stereo size
         with self._lock:
             seq = max(0, self._seq - catchup)
         while True:
@@ -278,12 +278,93 @@ class _StreamBroadcaster:
                     available = [(s, c) for s, c in self._buf if s >= seq]
             if available:
                 for s, chunk in sorted(available, key=lambda x: x[0]):
+                    if _SILENCE is None:
+                        _SILENCE = bytes(len(chunk))
                     seq = s + 1
                     to_yield.append(chunk)
             else:
-                to_yield.append(_SILENCE)
+                to_yield.append(_SILENCE or bytes(19200))
             for chunk in to_yield:
                 yield chunk
+
+    def consumer_realtime(self, catchup: int = 0, chunk_dur: float = 0.1,
+                          min_buf: int = 2, max_buf: int = 30):
+        """Adaptive jitter-buffered real-time consumer.
+
+        Phase 1 — Pre-buffer: accumulate `target` chunks before outputting,
+        yielding silence keepalives so the HTTP connection stays alive.
+        Phase 2 — Playback: output one chunk per `chunk_dur` seconds using a
+        wall-clock pacer.  On underrun (buffer empty), target grows by 2.
+        After 10 consecutive healthy reads the target shrinks by 1 (down to
+        min_buf).  This means the buffer starts small for low-latency local
+        connections and auto-grows on jittery WAN paths without user config.
+        """
+        target   = min_buf
+        _healthy = 0
+        _SILENCE = None  # Detected from first real chunk; fallback to stereo size
+
+        with self._lock:
+            seq = max(0, self._seq - catchup)
+
+        # ── Phase 1: pre-buffer accumulation ──────────────────────────────────
+        while True:
+            with self._cond:
+                if self.closed:
+                    return
+                avail = [(s, c) for s, c in self._buf if s >= seq]
+                if len(avail) < target:
+                    self._cond.wait(timeout=chunk_dur)
+                    if self.closed:
+                        return
+                    avail = [(s, c) for s, c in self._buf if s >= seq]
+            # Detect silence size from first real chunk
+            if avail and _SILENCE is None:
+                _SILENCE = bytes(len(avail[0][1]))
+            if len(avail) >= target:
+                break
+            # Keepalive while buffering
+            yield _SILENCE or bytes(19200)
+
+        # ── Phase 2: real-time clock-paced output ──────────────────────────────
+        next_t = time.monotonic()
+        while True:
+            chunk   = None
+            n_avail = 0
+            with self._cond:
+                if self.closed:
+                    return
+                avail = [(s, c) for s, c in self._buf if s >= seq]
+                n_avail = len(avail)
+
+            if avail:
+                _s, chunk = sorted(avail, key=lambda x: x[0])[0]
+                seq = _s + 1
+                if _SILENCE is None:
+                    _SILENCE = bytes(len(chunk))
+                # Healthy read — shrink target after 10 in a row
+                if n_avail > target + 2:
+                    _healthy += 1
+                    if _healthy >= 10:
+                        target   = max(target - 1, min_buf)
+                        _healthy = 0
+                else:
+                    _healthy = 0
+            else:
+                # Underrun — grow target and emit silence
+                target   = min(target + 2, max_buf)
+                _healthy = 0
+                chunk    = _SILENCE or bytes(19200)
+
+            yield chunk
+
+            # Pace output to wall-clock; if we're falling behind reset the clock
+            next_t += chunk_dur
+            sleep_t = next_t - time.monotonic()
+            if sleep_t > 0.001:
+                time.sleep(sleep_t)
+            elif sleep_t < -(chunk_dur * 3):
+                # Too far behind (e.g. startup burst) — reset pacer
+                next_t = time.monotonic()
 
 
 def _compute_stream_token(secret: str, route_id: str) -> str:
@@ -1084,7 +1165,8 @@ def register(app, ctx):
 
         def _gen():
             try:
-                for chunk in bc.consumer_with_keepalive():
+                # Local direct connection — small 200 ms pre-buffer, grows if needed
+                for chunk in bc.consumer_realtime(min_buf=2, max_buf=20):
                     yield chunk
             except GeneratorExit:
                 pass
@@ -1141,13 +1223,12 @@ def register(app, ctx):
                 _hub_broadcasters[rid] = bc
 
         def _gen():
-            # consumer_with_keepalive() yields silence every 0.1 s when the
-            # source hasn't started yet — this commits HTTP headers immediately
-            # (preventing nginx proxy_read_timeout) AND ensures the Waitress
-            # thread returns to a yield point regularly so client disconnects
-            # are detected promptly.
+            # consumer_realtime() pre-buffers 500 ms (5 chunks) for WAN paths,
+            # yields silence keepalives during buffering so nginx proxy_read_timeout
+            # is never hit, then paces output to wall-clock so ffmpeg on the dest
+            # side receives a smooth stream.  Buffer grows automatically on jitter.
             try:
-                for chunk in bc.consumer_with_keepalive(catchup=0):
+                for chunk in bc.consumer_realtime(catchup=0, min_buf=5, max_buf=30):
                     yield chunk
             except GeneratorExit:
                 pass
