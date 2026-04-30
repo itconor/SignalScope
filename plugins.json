@@ -234,8 +234,8 @@
     "name": "Audio Router",
     "file": "audiorouter.py",
     "icon": "🔀",
-    "description": "Broadcast audio routing — route any monitored input on any connected SignalScope site to a Livewire multicast output on any connected site. Named routes configured in a hub UI; clients execute them autonomously via short-poll. Same-site routes run ffmpeg locally (input → Livewire RTP multicast). Cross-site routes use the hub's existing PCM relay infrastructure — source client streams 16-bit mono PCM to a hub relay slot; dest client fetches from the relay and outputs Livewire L24 stereo 48 kHz RTP. Supports HTTP, HTTPS, SRT, RTSP, and ALSA inputs. FM and DAB inputs are flagged as unsupported. Requires ffmpeg on client nodes. Hub-only overview page.",
-    "version": "1.0.0",
+    "description": "Broadcast audio routing — route any monitored input on any connected SignalScope site to a Livewire multicast output on any connected site. Named routes configured in a hub UI; clients execute them autonomously via short-poll. Same-site routes run locally. Cross-site routes use P2P direct streaming when both nodes can reach each other; hub relay is used only as a last resort. Requires ffmpeg on client nodes. Hub-only overview page.",
+    "version": "1.1.0",
     "requirements": "ffmpeg",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/audiorouter.py"
   }

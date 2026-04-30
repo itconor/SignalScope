@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/audiorouter",
     "icon":     "🔀",
     "hub_only": True,
-    "version":  "1.0.0",
+    "version":  "1.1.0",
 }
 
 import hashlib
@@ -55,6 +55,10 @@ _procs_lock = threading.Lock()
 # Active source PCM reader threads: route_id → threading.Thread
 _active_src_threads: dict = {}
 _src_threads_lock = threading.Lock()
+
+# Active stream broadcasters on source clients: route_id → _StreamBroadcaster
+_active_broadcasters: dict = {}
+_bcast_lock = threading.Lock()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -118,6 +122,91 @@ def _input_type(device_index: str) -> str:
     return "alsa"
 
 
+# ── P2P stream broadcaster ─────────────────────────────────────────────────────
+
+import collections as _collections
+
+
+class _StreamBroadcaster:
+    """Fan-out raw PCM chunks from one ffmpeg process to multiple consumers.
+
+    Maintains a short ring buffer so a late-joining consumer (direct HTTP
+    client) can start a few chunks in rather than stalling.
+    """
+
+    def __init__(self, maxchunks: int = 200):  # ~20 s at 9600 B/chunk
+        self._lock  = threading.Lock()
+        self._buf   = _collections.deque(maxlen=maxchunks)
+        self._seq   = 0
+        self._cond  = threading.Condition(self._lock)
+        self.closed = False
+
+    def push(self, chunk: bytes):
+        with self._cond:
+            self._buf.append((self._seq, chunk))
+            self._seq += 1
+            self._cond.notify_all()
+
+    def close(self):
+        with self._cond:
+            self.closed = True
+            self._cond.notify_all()
+
+    def consumer(self, catchup: int = 5):
+        """Generator that yields PCM chunks. Blocks waiting for new data."""
+        with self._lock:
+            # Start a few chunks back so the dest has a small pre-buffer
+            start_seq = max(0, self._seq - catchup)
+        seq = start_seq
+        while True:
+            with self._cond:
+                if self.closed:
+                    return
+                available = [(s, c) for s, c in self._buf if s >= seq]
+                if not available:
+                    self._cond.wait(timeout=2.0)
+                    if self.closed:
+                        return
+                    continue
+            for s, chunk in sorted(available, key=lambda x: x[0]):
+                seq = s + 1
+                yield chunk
+
+
+def _compute_stream_token(secret: str, route_id: str) -> str:
+    """Stable 32-char token for direct PCM stream auth (secret + route_id)."""
+    key = (secret or "signalscope").encode()
+    return _hmac.new(key, f"audiorouter:{route_id}".encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _my_direct_url(cfg_ss, route_id: str, token: str) -> str:
+    """Best-effort URL that peer nodes can use to pull PCM from this node directly."""
+    import socket
+    port = getattr(getattr(cfg_ss, "network", None), "port", 8080) or 8080
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.1)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        ip = "127.0.0.1"
+    return f"http://{ip}:{port}/api/audiorouter/stream/{route_id}?token={token}"
+
+
+def _probe_direct_url(url: str, timeout: float = 2.5) -> bool:
+    """Return True if the peer's direct stream URL responds within timeout."""
+    try:
+        # Issue a HEAD-like GET that we immediately close — just verify reachability
+        req = urllib.request.Request(url, headers={"X-Probe": "1"})
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        # Any non-error response (200, 206, even 206 partial) means reachable
+        resp.close()
+        return True
+    except Exception:
+        return False
+
+
 def _stop_route_proc(route_id: str):
     """Kill any running ffmpeg for this route_id (source or dest)."""
     with _procs_lock:
@@ -133,14 +222,16 @@ def _stop_route_proc(route_id: str):
         _active_src_threads.pop(route_id, None)
 
 
-def _report_status(hub_url: str, site_name: str, route_id: str, status: str, error: str = ""):
+def _report_status(hub_url: str, site_name: str, route_id: str, status: str,
+                   error: str = "", direct_url: str = ""):
     """POST status update to hub."""
     try:
         payload = json.dumps({
-            "route_id": route_id,
-            "site":     site_name,
-            "status":   status,
-            "error":    error,
+            "route_id":   route_id,
+            "site":       site_name,
+            "status":     status,
+            "error":      error,
+            "direct_url": direct_url,
         }).encode()
         req = urllib.request.Request(
             f"{hub_url}/api/audiorouter/client_status",
@@ -717,12 +808,15 @@ def register(app, ctx):
                 with _slots_lock:
                     entry["slot_id"] = _route_slots.get(r["id"], "")
             else:
-                # Cross-site: we are the dest — fetch relay from hub
+                # Cross-site: we are the dest — try direct first, hub relay fallback
                 entry["role"] = "dest"
                 entry["hub_url"]    = _self_url(cfg_ss)
                 entry["hub_secret"] = secret
                 with _slots_lock:
                     entry["slot_id"] = _route_slots.get(r["id"], "")
+                # Pass the source's self-reported direct stream URL (if available)
+                with _status_lock:
+                    entry["direct_url"] = _route_status.get(r["id"], {}).get("direct_url", "")
 
             # Attach device_index for the source stream so clients can build ffmpeg cmd
             if entry["role"] in ("local", "source"):
@@ -739,20 +833,62 @@ def register(app, ctx):
     @app.post("/api/audiorouter/client_status")
     def audiorouter_client_status():
         data = request.get_json(silent=True) or {}
-        rid    = str(data.get("route_id", "")).strip()
-        rsite  = str(data.get("site", "")).strip()
-        status = str(data.get("status", "")).strip()
-        error  = str(data.get("error", "")).strip()
+        rid        = str(data.get("route_id", "")).strip()
+        rsite      = str(data.get("site", "")).strip()
+        status     = str(data.get("status", "")).strip()
+        error      = str(data.get("error", "")).strip()
+        direct_url = str(data.get("direct_url", "")).strip()
         if not rid:
             return jsonify({"ok": False, "error": "route_id required"}), 400
         with _status_lock:
             _route_status[rid] = {
-                "site":   rsite,
-                "status": status,
-                "error":  error,
-                "ts":     time.time(),
+                "site":       rsite,
+                "status":     status,
+                "error":      error,
+                "direct_url": direct_url,
+                "ts":         time.time(),
             }
         return jsonify({"ok": True})
+
+    # ── Direct PCM stream endpoint (P2P — no hub relay) ───────────────────────
+    # Not login_required: authenticated via per-route HMAC token instead.
+    # NOTE: each active direct route holds one Waitress worker thread. With
+    # typical route counts (< 10) this is well within the threads=64 budget.
+
+    @app.get("/api/audiorouter/stream/<route_id>")
+    def audiorouter_direct_stream(route_id):
+        from flask import Response
+        token    = (request.args.get("token") or
+                    request.headers.get("X-Audio-Token") or "")
+        expected = _compute_stream_token(secret, route_id)
+        if not token or token != expected:
+            return jsonify({"error": "invalid token"}), 401
+
+        # If this is a probe request, just confirm we're alive
+        if request.headers.get("X-Probe"):
+            return jsonify({"ok": True})
+
+        with _bcast_lock:
+            bc = _active_broadcasters.get(route_id)
+        if bc is None:
+            return jsonify({"error": "route not active on this node"}), 404
+
+        def _gen():
+            try:
+                for chunk in bc.consumer():
+                    yield chunk
+            except GeneratorExit:
+                pass
+
+        return Response(
+            _gen(),
+            mimetype="application/octet-stream",
+            headers={
+                "Transfer-Encoding": "chunked",
+                "X-Audio-Format":    "s16le/48000/1",
+                "Cache-Control":     "no-cache",
+            },
+        )
 
     # ── Client: start routing daemon thread ───────────────────────────────────
 
@@ -969,7 +1105,8 @@ def _start_route(route: dict, hub_url: str, site_name: str, monitor, listen_regi
     if role == "local":
         _start_local_route(route, device_index, itype, rtp_url, hub_url, site_name, monitor)
     elif role == "source":
-        _start_source_route(route, device_index, itype, hub_url, site_name, monitor)
+        _start_source_route(route, device_index, itype, hub_url, site_name, monitor,
+                            cfg_ss=monitor.app_cfg)
     elif role == "dest":
         _start_dest_route(route, rtp_url, hub_url, site_name, monitor)
 
@@ -1030,10 +1167,18 @@ def _start_local_route(route: dict, device_index: str, itype: str, rtp_url: str,
 
 
 def _start_source_route(route: dict, device_index: str, itype: str,
-                        hub_url: str, site_name: str, monitor):
+                        hub_url: str, site_name: str, monitor, cfg_ss=None):
     """
-    Cross-site SOURCE role:
-    ffmpeg → raw PCM stdout → thread → POST 9600-byte chunks to hub relay slot.
+    Cross-site SOURCE role.
+    Routing priority (best latency first):
+      1. Direct P2P  — dest pulls PCM from this node's /api/audiorouter/stream/<rid>
+      2. Hub relay   — fallback when dest can't reach us directly
+
+    A single ffmpeg process feeds a _StreamBroadcaster. Two consumers run
+    concurrently:
+      • Hub relay sender   — always runs (posts 9600-byte chunks to hub slot)
+      • Direct HTTP stream — served via Flask /api/audiorouter/stream/<rid>
+        (dest connects directly when it can, no hub audio involved)
     """
     rid     = route["id"]
     slot_id = route.get("slot_id", "")
@@ -1049,21 +1194,13 @@ def _start_source_route(route: dict, device_index: str, itype: str,
         _report_status(hub_url, site_name, rid, "error", "ffmpeg not found")
         return
 
-    # Produce raw 16-bit LE mono 48kHz PCM on stdout
+    # ── Start ffmpeg → stdout (raw 16-bit LE mono 48kHz PCM) ──────────────────
     cmd = [ffmpeg, "-y"] + _build_ffmpeg_input_args(device_index, itype) + [
-        "-ac", "1",
-        "-ar", "48000",
-        "-f", "s16le",
-        "pipe:1",
+        "-ac", "1", "-ar", "48000", "-f", "s16le", "pipe:1",
     ]
-
     monitor.log(f"[AudioRouter] Source route {route['name']!r}: {' '.join(cmd)}")
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         with _procs_lock:
             _active_procs[rid] = proc
     except Exception as e:
@@ -1071,44 +1208,68 @@ def _start_source_route(route: dict, device_index: str, itype: str,
         _report_status(hub_url, site_name, rid, "error", str(e))
         return
 
-    chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
-    _report_status(hub_url, site_name, rid, "connecting")
+    # ── Create broadcaster for fan-out to hub relay + direct HTTP clients ──────
+    bc = _StreamBroadcaster()
+    with _bcast_lock:
+        _active_broadcasters[rid] = bc
 
-    def _sender():
-        first = True
+    # ── Compute and report direct stream URL to hub ────────────────────────────
+    token      = _compute_stream_token(secret, rid)
+    direct_url = _my_direct_url(cfg_ss, rid, token) if cfg_ss else ""
+    _report_status(hub_url, site_name, rid, "connecting", direct_url=direct_url)
+
+    # ── Reader thread: ffmpeg stdout → broadcaster ─────────────────────────────
+    def _reader():
         try:
             while proc.poll() is None:
                 chunk = proc.stdout.read(9600)
                 if not chunk:
                     break
+                bc.push(chunk)
+        except Exception as e:
+            monitor.log(f"[AudioRouter] Source reader {route['name']!r} error: {e}")
+        finally:
+            bc.close()
+            with _bcast_lock:
+                _active_broadcasters.pop(rid, None)
+            monitor.log(f"[AudioRouter] Source reader {route['name']!r} stopped.")
+
+    threading.Thread(target=_reader, daemon=True, name=f"ARRdr-{rid[:8]}").start()
+
+    # ── Hub relay sender: always posts to hub slot (fallback path) ─────────────
+    chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
+
+    def _hub_sender():
+        first = True
+        try:
+            for chunk in bc.consumer():
                 if first:
-                    _report_status(hub_url, site_name, rid, "active")
+                    _report_status(hub_url, site_name, rid, "active",
+                                   direct_url=direct_url)
                     first = False
-                ts  = time.time()
-                sig = _sign_chunk(secret, chunk, ts) if secret else ""
+                ts    = time.time()
+                sig   = _sign_chunk(secret, chunk, ts) if secret else ""
                 nonce = hashlib.md5(os.urandom(8)).hexdigest()[:16]
-                req = urllib.request.Request(
-                    chunk_url,
-                    data=chunk,
-                    method="POST",
+                req   = urllib.request.Request(
+                    chunk_url, data=chunk, method="POST",
                     headers={
-                        "Content-Type":  "application/octet-stream",
-                        "X-Hub-Sig":     sig,
-                        "X-Hub-Ts":      f"{ts:.0f}",
-                        "X-Hub-Nonce":   nonce,
+                        "Content-Type": "application/octet-stream",
+                        "X-Hub-Sig":    sig,
+                        "X-Hub-Ts":     f"{ts:.0f}",
+                        "X-Hub-Nonce":  nonce,
                     },
                 )
                 try:
                     urllib.request.urlopen(req, timeout=5).close()
                 except Exception:
-                    pass  # Hub temporarily unreachable — keep reading PCM
+                    pass  # Hub temporarily unreachable — keep going (direct path still works)
         except Exception as e:
-            monitor.log(f"[AudioRouter] Source sender {route['name']!r} error: {e}")
+            monitor.log(f"[AudioRouter] Hub relay sender {route['name']!r} error: {e}")
         finally:
             _report_status(hub_url, site_name, rid, "idle")
-            monitor.log(f"[AudioRouter] Source sender {route['name']!r} stopped.")
+            monitor.log(f"[AudioRouter] Hub relay sender {route['name']!r} stopped.")
 
-    t = threading.Thread(target=_sender, daemon=True, name=f"ARSrc-{rid[:8]}")
+    t = threading.Thread(target=_hub_sender, daemon=True, name=f"ARSrc-{rid[:8]}")
     t.start()
     with _src_threads_lock:
         _active_src_threads[rid] = t
@@ -1117,14 +1278,21 @@ def _start_source_route(route: dict, device_index: str, itype: str,
 def _start_dest_route(route: dict, rtp_url: str,
                       hub_url: str, site_name: str, monitor):
     """
-    Cross-site DEST role:
-    Fetch raw PCM from hub relay slot → ffmpeg → Livewire RTP multicast.
-    """
-    rid     = route["id"]
-    slot_id = route.get("slot_id", "")
+    Cross-site DEST role.
+    Routing priority (best latency first):
+      1. Direct P2P  — ffmpeg pulls PCM directly from source node (no hub audio)
+      2. Hub relay   — fallback when source node is not directly reachable
 
-    if not slot_id:
-        _report_status(hub_url, site_name, rid, "error", "No relay slot assigned yet")
+    The source node reports its direct stream URL via the hub status API.
+    The hub includes it in the poll response as 'direct_url'. We probe it
+    before falling back to the hub relay URL.
+    """
+    rid        = route["id"]
+    slot_id    = route.get("slot_id", "")
+    direct_url = (route.get("direct_url") or "").strip()
+
+    if not slot_id and not direct_url:
+        _report_status(hub_url, site_name, rid, "error", "No relay slot or direct URL yet")
         return
 
     import shutil
@@ -1133,9 +1301,30 @@ def _start_dest_route(route: dict, rtp_url: str,
         _report_status(hub_url, site_name, rid, "error", "ffmpeg not found")
         return
 
-    stream_url = f"{hub_url}/hub/scanner/stream/{slot_id}"
+    # ── Choose stream URL: prefer direct, fall back to hub relay ──────────────
+    if direct_url:
+        monitor.log(f"[AudioRouter] Dest route {route['name']!r}: probing direct URL…")
+        if _probe_direct_url(direct_url, timeout=2.5):
+            stream_url = direct_url
+            via = "direct"
+            monitor.log(f"[AudioRouter] Dest route {route['name']!r}: direct path OK → {direct_url}")
+        else:
+            monitor.log(
+                f"[AudioRouter] Dest route {route['name']!r}: direct probe failed, "
+                f"falling back to hub relay"
+            )
+            stream_url = f"{hub_url}/hub/scanner/stream/{slot_id}" if slot_id else ""
+            via = "hub"
+    else:
+        stream_url = f"{hub_url}/hub/scanner/stream/{slot_id}" if slot_id else ""
+        via = "hub"
 
-    # Raw 16-bit LE mono 48kHz PCM from relay → upmix stereo → L24 RTP Livewire
+    if not stream_url:
+        _report_status(hub_url, site_name, rid, "error", "No usable stream URL")
+        return
+
+    # ── Build ffmpeg command: raw PCM → stereo L24 → Livewire RTP ─────────────
+    # Direct URL serves s16le/48000/1 (same format as hub relay)
     cmd = [
         ffmpeg, "-y",
         "-reconnect", "1",
@@ -1147,16 +1336,14 @@ def _start_dest_route(route: dict, rtp_url: str,
         "-i", stream_url,
     ] + _ffmpeg_lw_output_args(rtp_url)
 
-    monitor.log(f"[AudioRouter] Dest route {route['name']!r}: {' '.join(cmd)}")
+    monitor.log(
+        f"[AudioRouter] Dest route {route['name']!r} via={via}: {' '.join(cmd)}"
+    )
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         with _procs_lock:
             _active_procs[rid] = proc
-        _report_status(hub_url, site_name, rid, "active")
+        _report_status(hub_url, site_name, rid, "active", f"via {via}")
     except Exception as e:
         monitor.log(f"[AudioRouter] Dest route {route['name']!r} ffmpeg failed: {e}")
         _report_status(hub_url, site_name, rid, "error", str(e))

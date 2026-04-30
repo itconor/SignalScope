@@ -2,6 +2,26 @@
 
 ---
 
+### Audio Router 1.1.0 — 2026-04-29
+
+**P2P direct routing — hub relay is now last resort**
+
+- Cross-site routes now try direct P2P before hub relay. Source node starts a
+  `_StreamBroadcaster` fan-out: a single ffmpeg process feeds both the hub relay
+  sender thread and a new `/api/audiorouter/stream/<route_id>` HTTP endpoint
+  (authenticated via a stable per-route HMAC token — no login session required).
+- Source reports its direct URL (`http://<lan-ip>:<port>/…?token=…`) to the hub
+  via the status API. Hub passes it to the dest client in the next poll response.
+- Dest probes the direct URL (2.5 s timeout) before deciding which path to use.
+  Routing priority: (1) same-site local, (2) direct P2P, (3) hub relay.
+- Hub relay sender always runs concurrently, so a brief P2P outage degrades
+  gracefully to hub relay without restarting ffmpeg.
+- Fixed `_report_status` to accept and forward a `direct_url` field.
+- Fixed `_start_route` to pass `cfg_ss` to `_start_source_route` so the
+  reported direct URL uses the node's LAN IP rather than 127.0.0.1.
+
+---
+
 ### Audio Router 1.0.0 — 2026-04-29
 
 **New plugin: Broadcast Audio Router**
