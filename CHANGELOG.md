@@ -2,6 +2,37 @@
 
 ---
 
+### Audio Router 1.2.3 — 2026-04-30
+
+**Fix: hub relay 404 — replace scanner-slot relay with hub-side broadcaster**
+
+- Root cause: `listen_registry` scanner slots expire when idle. The hub
+  creates them at startup via `_restore_slots()`, but DAB (and other slow-
+  starting inputs) can take 2+ minutes to begin pushing audio. By that time
+  the slot has expired, `listen_registry.get(slot_id)` returns None, and
+  `/api/audiorouter/hub_stream/` returns 404 indefinitely.
+- Fix: removed all scanner-relay-slot dependency from the audio relay path.
+  The hub now holds a `_StreamBroadcaster` per route in `_hub_broadcasters`
+  (never expires — lives as long as the hub process).
+  - Source nodes POST raw PCM to `POST /api/audiorouter/push_chunk/<rid>?token=HMAC`
+    (new endpoint, replaces `/api/v1/audio_chunk/{slot_id}`)
+  - Dest `GET /api/audiorouter/hub_stream/<rid>?token=HMAC` reads from the
+    hub broadcaster — created lazily on first push or first consumer connect,
+    so the dest can connect before the source starts and will just block until
+    audio arrives
+- `_start_dest_route`: hub_stream_url is always valid (computed from hub_url
+  + rid + token); no longer requires `slot_id` to be non-empty
+- `_start_source_route` and `_start_source_route_buffered`: removed
+  `slot_id` guard; both now push to `push_chunk` URL
+- Scanner relay slots (`_route_slots`, `_restore_slots`, `_ensure_relay_slot`)
+  are kept for backward-compat but no longer carry audio
+- Hub broadcaster closed on route disable and delete
+
+**Note**: the HUB must be updated to 1.2.3. The old hub code does not have
+`/api/audiorouter/push_chunk/` or the broadcaster-backed `hub_stream/`.
+
+---
+
 ### Audio Router 1.2.2 — 2026-04-30
 
 **Fix: dest client hub relay exits silently — scanner stream requires login**

@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/audiorouter",
     "icon":     "🔀",
     "hub_only": True,
-    "version":  "1.2.2",
+    "version":  "1.2.3",
 }
 
 import hashlib
@@ -51,8 +51,16 @@ _status_lock = threading.Lock()
 _route_status: dict = {}
 
 # Per-route relay slot IDs managed by hub: route_id → slot_id
+# NOTE: slots are kept for backward-compat only; the actual audio relay now
+# flows through _hub_broadcasters (hub-side) rather than the scanner relay.
 _route_slots: dict = {}
 _slots_lock = threading.Lock()
+
+# Hub-side broadcasters for relay audio: route_id → _StreamBroadcaster
+# Created lazily when the first push arrives or the first consumer connects.
+# No scanner-slot inactivity-timeout issues — lives as long as the hub process.
+_hub_broadcasters: dict = {}
+_hbcast_lock = threading.Lock()
 
 # Active ffmpeg processes on client: route_id → subprocess.Popen
 _active_procs: dict = {}
@@ -834,13 +842,17 @@ def register(app, ctx):
         if len(new_routes) == len(routes):
             return jsonify({"ok": False, "error": "not found"}), 404
 
-        # Close relay slot if one exists
+        # Close relay slot and hub broadcaster if they exist
         with _slots_lock:
             slot_id = _route_slots.pop(rid, None)
         if slot_id:
             slot = listen_registry.get(slot_id)
             if slot:
                 slot.closed = True
+        with _hbcast_lock:
+            bc = _hub_broadcasters.pop(rid, None)
+        if bc:
+            bc.close()
 
         with _status_lock:
             _route_status.pop(rid, None)
@@ -882,7 +894,7 @@ def register(app, ctx):
             if not has_slot:
                 _ensure_relay_slot(target, listen_registry, monitor)
 
-        # When disabling, close relay slot
+        # When disabling, close relay slot and hub broadcaster
         if not target.get("enabled"):
             with _slots_lock:
                 slot_id = _route_slots.pop(rid, None)
@@ -890,6 +902,10 @@ def register(app, ctx):
                 slot = listen_registry.get(slot_id)
                 if slot:
                     slot.closed = True
+            with _hbcast_lock:
+                bc = _hub_broadcasters.pop(rid, None)
+            if bc:
+                bc.close()
             with _status_lock:
                 _route_status.pop(rid, None)
 
@@ -1030,17 +1046,32 @@ def register(app, ctx):
             },
         )
 
-    # ── Hub relay stream endpoint (dest clients pull via HMAC token) ──────────────
-    # The scanner relay at /hub/scanner/stream/<slot_id> requires @login_required
-    # (browser session) and cannot be used by ffmpeg on a remote dest node.
-    # This endpoint is authenticated with the same per-route HMAC token used
-    # by the direct P2P stream — no session needed.
-    # NOTE: each active cross-site route holds one Waitress thread here.
-    # With typical route counts (< 10) this is well within threads=64.
+    # ── Hub relay: source pushes PCM, dest reads it ───────────────────────────────
+    # Both endpoints use the per-route HMAC token — no browser session needed.
+    # The hub holds a _StreamBroadcaster per route; source writes, dest(s) read.
+    # This replaces the scanner-relay-slot path which expired during DAB startup.
+
+    @app.post("/api/audiorouter/push_chunk/<rid>")
+    def audiorouter_push_chunk(rid):
+        """Source POSTs raw PCM chunks here instead of /api/v1/audio_chunk."""
+        token    = (request.args.get("token") or
+                    request.headers.get("X-Audio-Token") or "")
+        expected = _compute_stream_token(secret, rid)
+        if not token or token != expected:
+            return jsonify({"error": "invalid token"}), 401
+        data = request.get_data()
+        if data:
+            with _hbcast_lock:
+                bc = _hub_broadcasters.get(rid)
+                if bc is None or bc.closed:
+                    bc = _StreamBroadcaster()
+                    _hub_broadcasters[rid] = bc
+            bc.push(data)
+        return "", 204
 
     @app.get("/api/audiorouter/hub_stream/<rid>")
     def audiorouter_hub_stream(rid):
-        import queue as _queue
+        """Dest GETs a continuous PCM stream from the hub broadcaster."""
         from flask import Response
         token    = (request.args.get("token") or
                     request.headers.get("X-Audio-Token") or "")
@@ -1048,28 +1079,18 @@ def register(app, ctx):
         if not token or token != expected:
             return jsonify({"error": "invalid token"}), 401
 
-        with _slots_lock:
-            slot_id = _route_slots.get(rid, "")
-        if not slot_id:
-            return jsonify({"error": "no relay slot for this route"}), 404
-
-        slot = listen_registry.get(slot_id)
-        if slot is None:
-            return jsonify({"error": "slot not found or expired"}), 404
+        # Ensure a broadcaster exists — create one now if the source hasn't
+        # pushed yet; it will block in consumer() until data arrives.
+        with _hbcast_lock:
+            bc = _hub_broadcasters.get(rid)
+            if bc is None or bc.closed:
+                bc = _StreamBroadcaster()
+                _hub_broadcasters[rid] = bc
 
         def _gen():
             try:
-                while not slot.closed:
-                    try:
-                        chunk = slot.get(timeout=1.0)
-                        if chunk:
-                            yield chunk
-                    except _queue.Empty:
-                        continue  # No data yet — keep the connection alive
-                    except Exception:
-                        if slot.closed:
-                            break
-                        continue
+                for chunk in bc.consumer():
+                    yield chunk
             except GeneratorExit:
                 pass
 
@@ -1433,13 +1454,8 @@ def _start_local_route_buffered(route: dict, inp, rtp_url: str,
 def _start_source_route_buffered(route: dict, inp, hub_url: str, site_name: str,
                                   monitor, cfg_ss=None):
     """Cross-site DAB/FM SOURCE role: SignalScope PCM buffer → broadcaster → hub relay + direct HTTP."""
-    rid     = route["id"]
-    slot_id = route.get("slot_id", "")
-    secret  = route.get("hub_secret", "")
-
-    if not slot_id:
-        _report_status(hub_url, site_name, rid, "error", "No relay slot assigned yet")
-        return
+    rid    = route["id"]
+    secret = route.get("hub_secret", "")
 
     bc = _StreamBroadcaster()
     with _bcast_lock:
@@ -1447,6 +1463,7 @@ def _start_source_route_buffered(route: dict, inp, hub_url: str, site_name: str,
 
     token      = _compute_stream_token(secret, rid)
     direct_url = _my_direct_url(cfg_ss, rid, token) if cfg_ss else ""
+    push_url   = f"{hub_url}/api/audiorouter/push_chunk/{rid}?token={token}"
 
     # Sentinel proc so _stop_route_proc / already-running check works
     stop = threading.Event()
@@ -1480,22 +1497,12 @@ def _start_source_route_buffered(route: dict, inp, hub_url: str, site_name: str,
 
     threading.Thread(target=_reader, daemon=True, name=f"ARBufR-{rid[:8]}").start()
 
-    chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
-
     def _hub_sender():
         try:
             for chunk in bc.consumer():
-                ts    = time.time()
-                sig   = _sign_chunk(secret, chunk, ts) if secret else ""
-                nonce = hashlib.md5(os.urandom(8)).hexdigest()[:16]
-                req   = urllib.request.Request(
-                    chunk_url, data=chunk, method="POST",
-                    headers={
-                        "Content-Type": "application/octet-stream",
-                        "X-Hub-Sig":    sig,
-                        "X-Hub-Ts":     f"{ts:.0f}",
-                        "X-Hub-Nonce":  nonce,
-                    },
+                req = urllib.request.Request(
+                    push_url, data=chunk, method="POST",
+                    headers={"Content-Type": "application/octet-stream"},
                 )
                 try:
                     urllib.request.urlopen(req, timeout=5).close()
@@ -1556,13 +1563,8 @@ def _start_source_route(route: dict, device_index: str, itype: str,
       • Direct HTTP stream — served via Flask /api/audiorouter/stream/<rid>
         (dest connects directly when it can, no hub audio involved)
     """
-    rid     = route["id"]
-    slot_id = route.get("slot_id", "")
-    secret  = route.get("hub_secret", "")
-
-    if not slot_id:
-        _report_status(hub_url, site_name, rid, "error", "No relay slot assigned yet")
-        return
+    rid    = route["id"]
+    secret = route.get("hub_secret", "")
 
     import shutil
     ffmpeg = shutil.which("ffmpeg")
@@ -1592,9 +1594,10 @@ def _start_source_route(route: dict, device_index: str, itype: str,
     with _bcast_lock:
         _active_broadcasters[rid] = bc
 
-    # ── Compute and report direct stream URL to hub ────────────────────────────
+    # ── Compute direct URL + hub push URL ─────────────────────────────────────
     token      = _compute_stream_token(secret, rid)
     direct_url = _my_direct_url(cfg_ss, rid, token) if cfg_ss else ""
+    push_url   = f"{hub_url}/api/audiorouter/push_chunk/{rid}?token={token}"
     _report_status(hub_url, site_name, rid, "connecting", direct_url=direct_url)
 
     # ── Reader thread: ffmpeg stdout → broadcaster ─────────────────────────────
@@ -1615,9 +1618,7 @@ def _start_source_route(route: dict, device_index: str, itype: str,
 
     threading.Thread(target=_reader, daemon=True, name=f"ARRdr-{rid[:8]}").start()
 
-    # ── Hub relay sender: always posts to hub slot (fallback path) ─────────────
-    chunk_url = f"{hub_url}/api/v1/audio_chunk/{slot_id}"
-
+    # ── Hub relay sender: POSTs chunks to hub push_chunk endpoint ──────────────
     def _hub_sender():
         first = True
         try:
@@ -1626,22 +1627,14 @@ def _start_source_route(route: dict, device_index: str, itype: str,
                     _report_status(hub_url, site_name, rid, "active",
                                    direct_url=direct_url)
                     first = False
-                ts    = time.time()
-                sig   = _sign_chunk(secret, chunk, ts) if secret else ""
-                nonce = hashlib.md5(os.urandom(8)).hexdigest()[:16]
-                req   = urllib.request.Request(
-                    chunk_url, data=chunk, method="POST",
-                    headers={
-                        "Content-Type": "application/octet-stream",
-                        "X-Hub-Sig":    sig,
-                        "X-Hub-Ts":     f"{ts:.0f}",
-                        "X-Hub-Nonce":  nonce,
-                    },
+                req = urllib.request.Request(
+                    push_url, data=chunk, method="POST",
+                    headers={"Content-Type": "application/octet-stream"},
                 )
                 try:
                     urllib.request.urlopen(req, timeout=5).close()
                 except Exception:
-                    pass  # Hub temporarily unreachable — keep going (direct path still works)
+                    pass  # Hub temporarily unreachable — direct path still works
         except Exception as e:
             monitor.log(f"[AudioRouter] Hub relay sender {route['name']!r} error: {e}")
         finally:
@@ -1670,17 +1663,17 @@ def _start_dest_route(route: dict, rtp_url: str,
     before falling back to the hub relay URL.
     """
     rid        = route["id"]
-    slot_id    = route.get("slot_id", "")
     direct_url = (route.get("direct_url") or "").strip()
     secret     = (route.get("hub_secret") or "").strip()
 
-    # Build the HMAC-authenticated hub relay URL (does NOT require login session)
-    token = _compute_stream_token(secret, rid)
-    hub_stream_url = (f"{hub_url}/api/audiorouter/hub_stream/{rid}?token={token}"
-                      if slot_id else "")
+    # Hub relay URL — HMAC-authenticated, no scanner slot or session needed.
+    # The hub creates a broadcaster lazily when the source first pushes data;
+    # the dest just needs hub_url, rid, and the HMAC token.
+    token          = _compute_stream_token(secret, rid)
+    hub_stream_url = f"{hub_url}/api/audiorouter/hub_stream/{rid}?token={token}"
 
-    if not hub_stream_url and not direct_url:
-        _report_status(hub_url, site_name, rid, "error", "No relay slot or direct URL yet")
+    if not hub_url:
+        _report_status(hub_url, site_name, rid, "error", "No hub URL configured")
         return
 
     import shutil
