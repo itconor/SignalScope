@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/audiorouter",
     "icon":     "🔀",
     "hub_only": True,
-    "version":  "1.2.9",
+    "version":  "1.2.10",
 }
 
 import hashlib
@@ -448,25 +448,47 @@ def _stop_route_proc(route_id: str):
         _active_src_threads.pop(route_id, None)
 
 
+_CHUNK_DUR = 0.1          # seconds per PCM chunk (100 ms at 48 kHz / 9600 B stereo)
+_MIN_POLL_INTERVAL = 0.3  # minimum seconds between hub_chunks requests
+
+
 def _hub_poll_and_feed(proc, hub_chunks_url: str, token: str,
                        stop_ev: threading.Event, route_name: str, monitor) -> None:
     """Poll the hub's /api/audiorouter/hub_chunks endpoint and write PCM to
     ffmpeg's stdin.
 
-    Each HTTP request is a short-lived long-poll (≤1.5 s) — the Waitress
-    worker thread on the hub is released after every response.  This replaces
-    the old architecture where ffmpeg held a permanent hub Waitress thread via
-    /api/audiorouter/hub_stream.
+    Thread-occupancy design:
+      After writing N chunks to ffmpeg stdin, we wait (N-1) × CHUNK_DUR before
+      firing the next request.  This gives the hub time to accumulate the next
+      batch in its ring buffer while the Waitress thread is free.  When we do
+      poll again the hub returns immediately (ring buffer has chunks ready)
+      rather than blocking for up to 100 ms per chunk.
+
+      Occupancy at steady state: ~1 ms hold per 300-900 ms interval ≈ <1 %.
+      Without this pacing the client re-polls after every chunk (~100 ms
+      intervals), keeping the hub thread occupied ~91 % of the time on LAN.
     """
-    seq = 0
+    seq        = 0
+    _last_poll = 0.0
+
     while not stop_ev.is_set() and proc.poll() is None:
+        # Enforce minimum inter-poll gap regardless of how fast we returned.
+        gap = time.monotonic() - _last_poll
+        if gap < _MIN_POLL_INTERVAL:
+            stop_ev.wait(timeout=_MIN_POLL_INTERVAL - gap)
+            if stop_ev.is_set():
+                break
+
         try:
             url = f"{hub_chunks_url}?seq={seq}"
             req = urllib.request.Request(url, headers={"X-Audio-Token": token})
+            _last_poll = time.monotonic()
             with urllib.request.urlopen(req, timeout=4.0) as resp:
                 next_seq_hdr = resp.headers.get("X-Next-Seq", "")
                 data = resp.read()
             next_seq = int(next_seq_hdr) if next_seq_hdr else seq
+
+            n_written = 0
             if data:
                 # Binary format: [4-byte LE length][chunk data] ...
                 pos = 0
@@ -481,9 +503,19 @@ def _hub_poll_and_feed(proc, hub_chunks_url: str, token: str,
                         break
                     try:
                         proc.stdin.write(chunk)
+                        n_written += 1
                     except (BrokenPipeError, OSError):
                         return  # ffmpeg gone — exit quietly
+
             seq = next_seq
+
+            # Pace: if we received multiple chunks, wait most of their duration
+            # before polling again so the hub can refill its ring buffer.
+            # The next request will return near-instantly instead of holding
+            # a Waitress thread for 100 ms+ waiting for the next chunk.
+            if n_written > 1 and not stop_ev.is_set():
+                stop_ev.wait(timeout=(n_written - 1) * _CHUNK_DUR)
+
         except urllib.error.URLError as e:
             if stop_ev.is_set():
                 break
@@ -492,8 +524,11 @@ def _hub_poll_and_feed(proc, hub_chunks_url: str, token: str,
         except Exception as e:
             if stop_ev.is_set():
                 break
-            monitor.log(f"[AudioRouter] Hub chunk poll unexpected error ({route_name}): {e}")
+            monitor.log(
+                f"[AudioRouter] Hub chunk poll unexpected error ({route_name}): {e}"
+            )
             stop_ev.wait(1.0)
+
     # Close stdin so ffmpeg exits cleanly when the poll loop ends
     try:
         proc.stdin.close()
@@ -1432,27 +1467,26 @@ def register(app, ctx):
                 bc = _StreamBroadcaster()
                 _hub_broadcasters[rid] = bc
 
-        # Long-poll: wait up to 1.5 s for at least one chunk using the
-        # broadcaster's condition variable — no busy-wait.
-        _LONG_POLL_SECS = 1.5
-        deadline = time.monotonic() + _LONG_POLL_SECS
-        while True:
-            with bc._cond:
-                avail = [(s, c) for s, c in bc._buf if s >= seq]
-                if avail or bc.closed:
-                    break
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                bc._cond.wait(timeout=min(remaining, 0.5))
-            # Check again outside lock in case we were woken spuriously
-            with bc._lock:
-                avail = [(s, c) for s, c in bc._buf if s >= seq]
-            if avail or bc.closed or time.monotonic() >= deadline:
-                break
-
+        # Fast path: if chunks are already buffered, return immediately.
+        # This is the common steady-state case when the client paces itself —
+        # the ring buffer has accumulated chunks during the client's inter-poll
+        # wait, so there is no need to block the Waitress thread at all.
         with bc._lock:
             avail = [(s, c) for s, c in bc._buf if s >= seq]
+
+        if not avail and not bc.closed:
+            # Slow path: long-poll up to 1.5 s for the first chunk to arrive.
+            _LONG_POLL_SECS = 1.5
+            deadline = time.monotonic() + _LONG_POLL_SECS
+            while True:
+                with bc._cond:
+                    avail = [(s, c) for s, c in bc._buf if s >= seq]
+                    if avail or bc.closed:
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    bc._cond.wait(timeout=min(remaining, 0.5))
 
         if not avail:
             # Timeout with no chunks — return empty so client can re-poll

@@ -2,6 +2,40 @@
 
 ---
 
+### Audio Router 1.2.10 — 2026-04-30
+
+**Fix: hub still unresponsive — hub_chunks thread occupancy ~91% on LAN**
+
+The 1.2.9 chunk-poll approach was still hammering the hub almost as hard as the
+old `hub_stream` permanent connection. Root cause: `_hub_poll_and_feed` received
+one chunk (100ms audio), wrote it to ffmpeg stdin in ~1ms, then immediately fired
+the next request. With LAN RTT of 10ms the hub thread was occupied
+`100ms / (100ms + 10ms)` = **91% of the time** — nearly identical to the old
+approach which was 100%.
+
+**Two-part fix:**
+
+**Client-side pacing (`_hub_poll_and_feed`):**
+After writing N chunks to ffmpeg stdin, sleep `(N-1) × 100ms` before
+re-polling. During this pause the hub ring buffer accumulates the next batch.
+The following request finds chunks immediately ready and returns in ~1ms rather
+than blocking for 100ms+. Steady-state thread occupancy drops to **< 1%**.
+
+A `_MIN_POLL_INTERVAL = 0.3s` floor ensures that even single-chunk responses
+(slow source, startup) never poll faster than ~3/sec per route.
+
+**Hub-side fast path (`hub_chunks`):**
+Check the ring buffer immediately on arrival — if chunks are already queued
+(the common steady-state case after client pacing is in effect), return them
+without entering the condition-variable wait loop at all. The slow path
+(long-poll up to 1.5s) only runs when the buffer is genuinely empty.
+
+**Net result:** 5 active routes now uses ~0.05 threads on the hub instead of
+~5 threads. Hub is free to serve page loads and API calls with headroom to
+spare.
+
+---
+
 ### Audio Router 1.2.9 — 2026-04-30
 
 **Fix: hub responsiveness degraded by Audio Router streaming connections**

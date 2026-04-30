@@ -235,7 +235,7 @@
     "file": "audiorouter.py",
     "icon": "🔀",
     "description": "Broadcast audio routing — route any monitored input on any connected SignalScope site to a Livewire multicast output or unicast RTP stream on any connected site. Named routes configured in a hub UI; clients execute them autonomously via short-poll. Same-site routes run locally. Cross-site routes use P2P direct streaming when both nodes can reach each other; hub relay is used only as a last resort. DAB and FM inputs are supported via the monitoring PCM buffer. Requires ffmpeg on client nodes. Hub-only overview page.",
-    "version": "1.2.9",
+    "version": "1.2.10",
     "requirements": "ffmpeg",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/audiorouter.py"
   }
