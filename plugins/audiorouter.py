@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/audiorouter",
     "icon":     "🔀",
     "hub_only": True,
-    "version":  "1.2.5",
+    "version":  "1.2.6",
 }
 
 import hashlib
@@ -149,30 +149,52 @@ def _find_input(source_stream: str, monitor):
 
 def _stream_buf_chunks(inp, stop: threading.Event):
     """
-    Generator that yields int16 LE mono PCM bytes from inp._stream_buffer.
-    Blocks between SignalScope chunk deliveries (~0.5 s each).
-    Uses inp._live_chunk_seq as a low-overhead change signal.
+    Generator that yields int16 LE STEREO PCM bytes from SignalScope's
+    monitoring buffers.  Always outputs 2-channel interleaved s16le:
 
-    Handles both mono (float32 1-D) and stereo (float32 interleaved L/R)
-    chunks — stereo is downmixed to mono before conversion.
+      • Stereo source  → reads _audio_buffer (L/R interleaved float32),
+                         passes through as true stereo.
+      • Mono source    → reads _stream_buffer (mono float32), duplicates
+                         the single channel to both L and R.
+
+    Using always-stereo output means the dest ffmpeg command can
+    unconditionally use -ac 2, regardless of source type.
+
+    Previous design read _stream_buffer for all inputs and applied a
+    stereo-deinterleave to mono data, halving the sample count and
+    producing double-speed "chipmunk" audio.  Fixed here.
+
+    IMPORTANT: Both _stream_buffer and _audio_buffer default to None
+    until the monitoring loop starts.  We wait (without crashing) until
+    the buffer is initialised — a None here was the root cause of the
+    periodic broadcaster-close / 8-second restart cycle that exhausted
+    Waitress threads on the hub.
     """
     if not _HAVE_NP:
         return
     seen_seq = getattr(inp, "_live_chunk_seq", 0)
-    n_ch = int(getattr(inp, "_audio_channels", 1) or 1)
     while not stop.is_set():
+        n_ch = int(getattr(inp, "_audio_channels", 1) or 1)
+        # Stereo sources: _audio_buffer holds L/R interleaved float32 chunks.
+        # Mono sources: _stream_buffer holds mono float32 chunks.
+        buf = getattr(inp, "_audio_buffer" if n_ch == 2 else "_stream_buffer", None)
+        if buf is None:
+            # Monitoring loop hasn't started yet — wait and retry.
+            stop.wait(0.1)
+            continue
         cur_seq = getattr(inp, "_live_chunk_seq", seen_seq)
         if cur_seq <= seen_seq:
             stop.wait(0.05)
             continue
-        n_new = min(cur_seq - seen_seq, len(inp._stream_buffer))
+        n_new = min(cur_seq - seen_seq, len(buf))
         if n_new > 0:
-            for c in list(inp._stream_buffer)[-n_new:]:
+            for c in list(buf)[-n_new:]:
                 try:
                     arr = _np.asarray(c, dtype=_np.float32).ravel()
-                    # Downmix stereo to mono: interleaved [L, R, L, R, ...]
-                    if n_ch == 2 and arr.size % 2 == 0:
-                        arr = (arr[0::2] + arr[1::2]) * 0.5
+                    if n_ch != 2:
+                        # Mono → duplicate to stereo (L=R)
+                        arr = _np.column_stack([arr, arr]).ravel()
+                    # arr is now always stereo-interleaved float32
                     yield (_np.clip(arr * 32767, -32768, 32767)
                            .astype(_np.int16).tobytes())
                 except Exception:
@@ -1072,7 +1094,7 @@ def register(app, ctx):
             mimetype="application/octet-stream",
             headers={
                 "X-Accel-Buffering": "no",
-                "X-Audio-Format":    "s16le/48000/1",
+                "X-Audio-Format":    "s16le/48000/2",
                 "Cache-Control":     "no-cache",
             },
         )
@@ -1135,7 +1157,7 @@ def register(app, ctx):
             mimetype="application/octet-stream",
             headers={
                 "X-Accel-Buffering": "no",
-                "X-Audio-Format":    "s16le/48000/1",
+                "X-Audio-Format":    "s16le/48000/2",
                 "Cache-Control":     "no-cache",
             },
         )
@@ -1441,8 +1463,9 @@ def _start_local_route_buffered(route: dict, inp, rtp_url: str,
         _report_status(hub_url, site_name, rid, "error", "ffmpeg not found")
         return
 
+    # _stream_buf_chunks always outputs stereo-interleaved s16le/48000/2
     cmd = ([ffmpeg, "-y",
-            "-f", "s16le", "-ar", "48000", "-ac", "1",
+            "-f", "s16le", "-ar", "48000", "-ac", "2",
             "-i", "pipe:0"]
            + _ffmpeg_lw_output_args(rtp_url))
     monitor.log(f"[AudioRouter] Local/buffered route {route['name']!r}: {' '.join(cmd)}")
@@ -1741,7 +1764,8 @@ def _start_dest_route(route: dict, rtp_url: str,
         return
 
     # ── Build ffmpeg command: raw PCM → stereo L24 → Livewire RTP ─────────────
-    # Direct URL serves s16le/48000/1 (same format as hub relay)
+    # Both hub_stream and direct_stream serve s16le/48000/2 (always stereo):
+    # stereo sources pass through L/R; mono sources are duplicated to L=R.
     cmd = [
         ffmpeg, "-y",
         "-reconnect", "1",
@@ -1749,7 +1773,7 @@ def _start_dest_route(route: dict, rtp_url: str,
         "-reconnect_delay_max", "5",
         "-f", "s16le",
         "-ar", "48000",
-        "-ac", "1",
+        "-ac", "2",
         "-i", stream_url,
     ] + _ffmpeg_lw_output_args(rtp_url)
 

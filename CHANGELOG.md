@@ -2,6 +2,38 @@
 
 ---
 
+### Audio Router 1.2.6 — 2026-04-30
+
+**Fix: hub crash cycle and chipmunk audio — _stream_buf_chunks rewrite**
+
+**Root cause 1 — hub kill / 8-second restart cycle:**
+`_stream_buf_chunks` called `len(inp._stream_buffer)` without guarding
+against `None`. `InputConfig._stream_buffer` defaults to `None` until the
+monitoring loop initialises it. If `_start_source_route_buffered` ran before
+the monitoring loop had started (stream not yet connected), the `len(None)`
+raised `TypeError`. The `_reader` thread caught this, called `bc.close()` and
+set `stop`. Eight seconds later `_poll_and_execute` restarted the route.
+Each close/reopen cycle freed the hub_stream Waitress thread briefly (hub
+"recovers"), then re-held it (hub "dies again"). Fix: guard `buf is None`
+with a `stop.wait(0.1)` retry — no crash, generator simply waits.
+
+**Root cause 2 — chipmunk / double-speed audio:**
+The function read from `_stream_buffer` (always mono float32) but then
+applied stereo deinterleaving `arr[0::2] + arr[1::2]` when `_audio_channels == 2`.
+This treated the mono data as stereo, halving the sample count before
+converting to int16. Ffmpeg received half-length chunks and played them at
+2× speed (chipmunk). Fix: for stereo sources use `_audio_buffer` (true L/R
+interleaved float32); for mono sources use `_stream_buffer`. Remove the
+deinterleave logic entirely.
+
+**Stereo passthrough (Livewire source):**
+Output is now always stereo-interleaved s16le. Stereo sources pass through
+L and R unchanged. Mono sources are duplicated to L=R so the dest ffmpeg
+always receives valid 2-channel PCM. All ffmpeg commands updated from
+`-ac 1` to `-ac 2`. `X-Audio-Format` header updated to `s16le/48000/2`.
+
+---
+
 ### Audio Router 1.2.5 — 2026-04-30
 
 **Fix: hub overload / Waitress thread exhaustion from hub_stream blocking**
