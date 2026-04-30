@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/audiorouter",
     "icon":     "🔀",
     "hub_only": True,
-    "version":  "1.1.4",
+    "version":  "1.2.0",
 }
 
 import hashlib
@@ -47,7 +47,7 @@ _CFG_PATH = os.path.join(_BASE_DIR, "audiorouter_cfg.json")
 _cfg_lock   = threading.Lock()
 _status_lock = threading.Lock()
 
-# Per-route runtime status reported by clients: route_id → {site, status, error, ts}
+# Per-route runtime status reported by clients: route_id → {site_name → {status, error, direct_url, ts}}
 _route_status: dict = {}
 
 # Per-route relay slot IDs managed by hub: route_id → slot_id
@@ -251,6 +251,25 @@ def _probe_direct_url(url: str, timeout: float = 2.5) -> bool:
         return False
 
 
+def _drain_stderr(proc, label: str, monitor):
+    """Read ffmpeg stderr in a background thread and log on non-zero exit."""
+    lines = []
+    try:
+        for raw in proc.stderr:
+            line = raw.decode("utf-8", errors="replace").rstrip()
+            if line:
+                lines.append(line)
+                if len(lines) > 20:
+                    lines.pop(0)
+    except Exception:
+        pass
+    rc = proc.wait()
+    if rc not in (0, -9, -15) and lines:
+        monitor.log(f"[AudioRouter] {label} ffmpeg exit {rc}: {lines[-1]}")
+    elif rc not in (0, -9, -15):
+        monitor.log(f"[AudioRouter] {label} ffmpeg exit {rc} (no stderr)")
+
+
 def _stop_route_proc(route_id: str):
     """Kill any running ffmpeg for this route_id (source or dest)."""
     with _procs_lock:
@@ -341,6 +360,20 @@ code{font-family:monospace;font-size:12px;color:var(--mu)}
 .form-collapse{display:none}
 .form-collapse.open{display:block}
 .act-btns{display:flex;gap:6px}
+.rcard{background:var(--sur);border:1px solid var(--bor);border-radius:12px;overflow:hidden;margin-bottom:12px}
+.rcard-head{padding:10px 14px;display:flex;align-items:center;gap:10px;background:linear-gradient(180deg,#143766,#102b54);border-bottom:1px solid var(--bor)}
+.rcard-name{font-size:14px;font-weight:700;flex:1}
+.rcard-acts{display:flex;gap:6px;margin-left:auto}
+.rcard-body{display:flex;align-items:flex-start;gap:0;padding:0}
+.rcard-side{flex:1;padding:14px 16px}
+.rcard-arrow{display:flex;align-items:center;justify-content:center;padding:14px 0;font-size:20px;color:var(--acc);flex-shrink:0;width:40px;border-left:1px solid rgba(23,52,95,.4);border-right:1px solid rgba(23,52,95,.4);background:rgba(23,52,95,.2);align-self:stretch}
+.rcard-role{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--mu);margin-bottom:8px}
+.rcard-site,.rcard-stream{font-size:12px;margin-bottom:4px;color:var(--mu)}
+.rcard-site strong,.rcard-stream strong{color:var(--tx)}
+.rcard-mc{margin-top:2px;margin-bottom:6px}
+.rcard-st{margin-top:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.rcard-err{margin-top:6px;font-size:11px;color:var(--al);background:#2a0a0a;border:1px solid #991b1b;border-radius:4px;padding:3px 7px}
+.via-tag{font-size:10px;background:#0d1e40;color:var(--mu);border:1px solid var(--bor);border-radius:999px;padding:1px 7px}
 </style>
 </head><body>
 {{topnav("audiorouter")|safe}}
@@ -515,14 +548,30 @@ document.getElementById('add-route-btn').addEventListener('click',function(){
   }).catch(function(e){_showMsg('Request failed: '+e,true);});
 });
 
-// ── Routes table ──────────────────────────────────────────────────────────────
-function _statusBadge(r){
+// ── Routes cards ──────────────────────────────────────────────────────────────
+function _overallBadge(r){
   if(!r.enabled) return '<span class="badge b-mu">Disabled</span>';
   var st=r.status||'';
-  if(st==='active')   return '<span class="badge b-ok">Active</span>';
-  if(st==='error')    return '<span class="badge b-al" title="'+_esc(r.error||'')+'">Error</span>';
+  if(st==='active')     return '<span class="badge b-ok">Active</span>';
+  if(st==='error')      return '<span class="badge b-al">Error</span>';
   if(st==='connecting') return '<span class="badge b-wn">Connecting</span>';
   return '<span class="badge b-mu">Idle</span>';
+}
+
+function _sideBadge(st){
+  var s=st&&st.status||'';
+  if(s==='active')     return '<span class="badge b-ok">Active</span>';
+  if(s==='error')      return '<span class="badge b-al">Error</span>';
+  if(s==='connecting') return '<span class="badge b-wn">Connecting</span>';
+  if(s==='idle')       return '<span class="badge b-mu">Idle</span>';
+  return '<span class="badge b-mu">—</span>';
+}
+
+function _timeAgo(ts){
+  if(!ts) return '';
+  var secs=Math.round((Date.now()/1000)-ts);
+  if(secs<0) secs=0;
+  return '<span class="ts">('+secs+'s ago)</span>';
 }
 
 function _renderRoutes(routes){
@@ -531,27 +580,49 @@ function _renderRoutes(routes){
     wrap.innerHTML='<div class="empty">No routes configured — click "+ New Route" to add one.</div>';
     return;
   }
-  var html='<table><thead><tr>'
-    +'<th>Name</th><th>Source</th><th>Destination</th><th>Multicast</th><th>Status</th><th>Actions</th>'
-    +'</tr></thead><tbody>';
+  var html='';
   for(var i=0;i<routes.length;i++){
     var r=routes[i];
     var mc=_lwMc(r.dest_lw_stream_id);
-    html+='<tr>'
-      +'<td><strong>'+_esc(r.name)+'</strong></td>'
-      +'<td>'+_esc(r.source_site)+' / '+_esc(r.source_stream)+'</td>'
-      +'<td>'+_esc(r.dest_site)+' LW '+_esc(r.dest_lw_stream_id)+'</td>'
-      +'<td><code>'+_esc(mc)+'</code></td>'
-      +'<td>'+_statusBadge(r)+'</td>'
-      +'<td><span class="act-btns">'
-      +'<button class="btn bg bs route-toggle-btn" data-id="'+_esc(r.id)+'" data-enabled="'+(r.enabled?'1':'0')+'">'
-      +(r.enabled?'Disable':'Enable')
-      +'</button>'
-      +'<button class="btn bd bs route-del-btn" data-id="'+_esc(r.id)+'">Delete</button>'
-      +'</span></td>'
-      +'</tr>';
+    var srcSt=r.source_status||{};
+    var dstSt=r.dest_status||{};
+    var srcErr=(srcSt.error||'').replace(/^via (direct|hub)$/i,'').trim();
+    var dstVia='';var dstErr='';
+    var dstErrRaw=dstSt.error||'';
+    var viaMatch=dstErrRaw.match(/^via (direct|hub)$/i);
+    if(viaMatch){dstVia=viaMatch[1];}else{dstErr=dstErrRaw;}
+
+    html+='<div class="rcard" data-id="'+_esc(r.id)+'">'
+      +'<div class="rcard-head">'
+        +'<strong class="rcard-name">'+_esc(r.name)+'</strong>'
+        +_overallBadge(r)
+        +'<span class="rcard-acts">'
+          +'<button class="btn bg bs route-toggle-btn" data-id="'+_esc(r.id)+'" data-enabled="'+(r.enabled?'1':'0')+'">'+(r.enabled?'Disable':'Enable')+'</button>'
+          +'<button class="btn bd bs route-del-btn" data-id="'+_esc(r.id)+'">Delete</button>'
+        +'</span>'
+      +'</div>'
+      +'<div class="rcard-body">'
+        +'<div class="rcard-side">'
+          +'<div class="rcard-role">SOURCE</div>'
+          +'<div class="rcard-site">Site: <strong>'+_esc(r.source_site)+'</strong></div>'
+          +'<div class="rcard-stream">Stream: <strong>'+_esc(r.source_stream)+'</strong></div>'
+          +'<div class="rcard-st">'+_sideBadge(srcSt)+_timeAgo(srcSt.ts)+'</div>'
+          +(srcErr?'<div class="rcard-err">⚠ '+_esc(srcErr)+'</div>':'')
+        +'</div>'
+        +'<div class="rcard-arrow">→</div>'
+        +'<div class="rcard-side">'
+          +'<div class="rcard-role">DESTINATION</div>'
+          +'<div class="rcard-site">Site: <strong>'+_esc(r.dest_site)+'</strong></div>'
+          +'<div class="rcard-stream">LW Channel: <strong>'+_esc(r.dest_lw_stream_id)+'</strong></div>'
+          +'<div class="rcard-mc ts">Multicast: <code>'+_esc(mc)+'</code></div>'
+          +'<div class="rcard-st">'+_sideBadge(dstSt)
+            +(dstVia?'<span class="via-tag">via '+_esc(dstVia)+'</span>':'')
+            +_timeAgo(dstSt.ts)+'</div>'
+          +(dstErr?'<div class="rcard-err">⚠ '+_esc(dstErr)+'</div>':'')
+        +'</div>'
+      +'</div>'
+    +'</div>';
   }
-  html+='</tbody></table>';
   wrap.innerHTML=html;
 }
 
@@ -584,7 +655,7 @@ function _refresh(){
 }
 
 _refresh();
-setInterval(_refresh,10000);
+setInterval(_refresh,5000);
 })();
 </script></body></html>"""
 
@@ -668,15 +739,30 @@ def register(app, ctx):
         with _cfg_lock:
             cfg = _load_cfg()
         routes = cfg.get("routes", [])
-        # Merge runtime status
-        with _status_lock:
-            snap = dict(_route_status)
         merged = []
         for r in routes:
             entry = dict(r)
-            st = snap.get(r["id"], {})
-            entry["status"] = st.get("status", "idle")
-            entry["error"]  = st.get("error", "")
+            with _status_lock:
+                site_map = dict(_route_status.get(r["id"], {}))
+            src_st = site_map.get(r.get("source_site", ""), {})
+            dst_st = site_map.get(r.get("dest_site",   ""), {})
+            # Overall status: active > connecting > error > idle
+            overall = "idle"
+            for _s in [src_st, dst_st]:
+                if _s.get("status") == "active":
+                    overall = "active"
+                    break
+                if _s.get("status") == "connecting":
+                    overall = "connecting"
+            if overall not in ("active", "connecting"):
+                for _s in [src_st, dst_st]:
+                    if _s.get("status") == "error":
+                        overall = "error"
+                        break
+            entry["status"]        = overall
+            entry["error"]         = src_st.get("error", "") or dst_st.get("error", "")
+            entry["source_status"] = src_st
+            entry["dest_status"]   = dst_st
             merged.append(entry)
         return jsonify({"routes": merged})
 
@@ -859,7 +945,9 @@ def register(app, ctx):
                     entry["slot_id"] = _route_slots.get(r["id"], "")
                 # Pass the source's self-reported direct stream URL (if available)
                 with _status_lock:
-                    entry["direct_url"] = _route_status.get(r["id"], {}).get("direct_url", "")
+                    entry["direct_url"] = (_route_status.get(r["id"], {})
+                                           .get(r.get("source_site", ""), {})
+                                           .get("direct_url", ""))
 
             # Attach device_index for the source stream so clients can build ffmpeg cmd
             if entry["role"] in ("local", "source"):
@@ -884,8 +972,9 @@ def register(app, ctx):
         if not rid:
             return jsonify({"ok": False, "error": "route_id required"}), 400
         with _status_lock:
-            _route_status[rid] = {
-                "site":       rsite,
+            if rid not in _route_status:
+                _route_status[rid] = {}
+            _route_status[rid][rsite] = {
                 "status":     status,
                 "error":      error,
                 "direct_url": direct_url,
@@ -1234,7 +1323,7 @@ def _start_local_route_buffered(route: dict, inp, rtp_url: str,
     monitor.log(f"[AudioRouter] Local/buffered route {route['name']!r}: {' '.join(cmd)}")
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         with _procs_lock:
             _active_procs[rid] = proc
     except Exception as e:
@@ -1242,6 +1331,8 @@ def _start_local_route_buffered(route: dict, inp, rtp_url: str,
         _report_status(hub_url, site_name, rid, "error", str(e))
         return
 
+    threading.Thread(target=_drain_stderr, args=(proc, route["name"], monitor),
+                     daemon=True, name=f"ARStderr-{rid[:8]}").start()
     _report_status(hub_url, site_name, rid, "active")
 
     stop = threading.Event()
@@ -1371,10 +1462,12 @@ def _start_local_route(route: dict, device_index: str, itype: str, rtp_url: str,
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
         with _procs_lock:
             _active_procs[rid] = proc
+        threading.Thread(target=_drain_stderr, args=(proc, route["name"], monitor),
+                         daemon=True, name=f"ARStderr-{rid[:8]}").start()
         _report_status(hub_url, site_name, rid, "active")
     except Exception as e:
         monitor.log(f"[AudioRouter] Local route {route['name']!r} failed to start: {e}")
@@ -1415,13 +1508,16 @@ def _start_source_route(route: dict, device_index: str, itype: str,
     ]
     monitor.log(f"[AudioRouter] Source route {route['name']!r}: {' '.join(cmd)}")
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         with _procs_lock:
             _active_procs[rid] = proc
     except Exception as e:
         monitor.log(f"[AudioRouter] Source route {route['name']!r} ffmpeg failed: {e}")
         _report_status(hub_url, site_name, rid, "error", str(e))
         return
+
+    threading.Thread(target=_drain_stderr, args=(proc, route["name"], monitor),
+                     daemon=True, name=f"ARStderr-{rid[:8]}").start()
 
     # ── Create broadcaster for fan-out to hub relay + direct HTTP clients ──────
     bc = _StreamBroadcaster()
@@ -1555,9 +1651,11 @@ def _start_dest_route(route: dict, rtp_url: str,
         f"[AudioRouter] Dest route {route['name']!r} via={via}: {' '.join(cmd)}"
     )
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         with _procs_lock:
             _active_procs[rid] = proc
+        threading.Thread(target=_drain_stderr, args=(proc, route["name"], monitor),
+                         daemon=True, name=f"ARStderr-{rid[:8]}").start()
         _report_status(hub_url, site_name, rid, "active", f"via {via}")
     except Exception as e:
         monitor.log(f"[AudioRouter] Dest route {route['name']!r} ffmpeg failed: {e}")

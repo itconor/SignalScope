@@ -2,6 +2,30 @@
 
 ---
 
+### Audio Router 1.2.0 — 2026-04-30
+
+**UI overhaul: rich route cards with per-side status, ffmpeg error capture**
+
+- Routes panel replaced with card-per-route layout (`.rcard`). Each card shows
+  SOURCE and DESTINATION sides independently with their own status badges
+  (Active / Connecting / Error / Idle), last-seen timestamps, multicast address,
+  and "via direct / via hub" tag on the destination side.
+- `_route_status` restructured from `{rid: flat}` to `{rid: {site: {...}}}`.
+  Source and destination now each own their entry — a source reporting "active"
+  can no longer be overwritten by the destination reporting "idle", which was the
+  primary cause of cross-site routes blipping to active then back to idle.
+- ffmpeg stderr no longer goes to `/dev/null`. New `_drain_stderr()` helper
+  thread captures the last 20 lines from every ffmpeg process and logs them on
+  non-zero exit — giving visible evidence of exactly why a route died.
+- `audiorouter_routes_list` returns `source_status` and `dest_status` as
+  separate objects; overall status is derived (active wins, then connecting, then
+  error, then idle) rather than being first-write-wins.
+- `audiorouter_poll` reads `direct_url` via `_route_status[rid][source_site]`
+  (nested path) so the source's URL is never masked by a dest write.
+- Auto-refresh interval reduced from 10 s to 5 s.
+
+---
+
 ### Audio Router 1.1.4 — 2026-04-30
 
 **Fix: hub self-poll "Connection refused" / routes stay idle**
