@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.13",
+    "version":  "1.3.14",
 }
 
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -156,6 +156,8 @@ def _check_schedules():
     day_short  = now.strftime("%a").lower()      # "mon", "tue", …
     current_hm = now.strftime("%H:%M")           # "14:35"
 
+    today_date = now.strftime("%Y-%m-%d")         # "2026-04-30"
+
     # Build map of which schedule (if any) should be active per studio right now
     active_by_studio = {}
     for sched in schedules:
@@ -164,9 +166,16 @@ def _check_schedules():
         studio_id = sched.get("studio_id", "")
         if not studio_id:
             continue
-        days = sched.get("days") or []           # [] = every day
-        if days and day_short not in days:
-            continue
+        sched_date = (sched.get("date") or "").strip()
+        if sched_date:
+            # One-off: only active on the specified date
+            if sched_date != today_date:
+                continue
+        else:
+            # Recurring: check day of week
+            days = sched.get("days") or []       # [] = every day
+            if days and day_short not in days:
+                continue
         start = sched.get("start_time", "00:00")
         end   = sched.get("end_time",   "23:59")
         if start <= current_hm < end:
@@ -493,9 +502,16 @@ td code{font-size:11px;background:#050e20;padding:2px 6px;border-radius:4px;colo
 .sched-name{font-weight:700;font-size:13px;margin-bottom:3px}
 .sched-detail{font-size:11px;color:var(--mu)}
 .sched-badge{font-size:10px;font-weight:700;background:rgba(23,168,255,.18);color:var(--acc);border:1px solid rgba(23,168,255,.35);border-radius:999px;padding:2px 8px;margin-left:6px}
+.sched-badge.oneoff{background:rgba(245,158,11,.15);color:var(--wn);border-color:rgba(245,158,11,.35)}
+.sched-badge.past{background:rgba(239,68,68,.12);color:var(--al);border-color:rgba(239,68,68,.3)}
 .day-btns{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
 .day-btn{padding:3px 8px;border:1px solid var(--bor);border-radius:6px;background:#0d1e40;color:var(--mu);font-size:11px;font-weight:600;cursor:pointer}
 .day-btn.sel{background:rgba(23,168,255,.2);color:var(--acc);border-color:var(--acc)}
+.stype-btns{display:flex;gap:0;margin-top:6px}
+.stype-btn{padding:4px 12px;border:1px solid var(--bor);background:#0d1e40;color:var(--mu);font-size:11px;font-weight:600;cursor:pointer}
+.stype-btn:first-child{border-radius:6px 0 0 6px}
+.stype-btn:last-child{border-radius:0 6px 6px 0;border-left:none}
+.stype-btn.sel{background:rgba(23,168,255,.2);color:var(--acc);border-color:var(--acc)}
 input[type=time]{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:6px 9px;font-size:13px;font-family:inherit}
 input[type=time]:focus{border-color:var(--acc);outline:none}
 .tog{position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0}
@@ -601,16 +617,31 @@ input[type=time]:focus{border-color:var(--acc);outline:none}
             <select id="sf-station"></select>
           </div>
         </div>
-        <div class="field">
-          <label>Days (leave all unselected = every day)</label>
-          <div class="day-btns" id="sf-days">
-            <button type="button" class="day-btn" data-day="mon">Mon</button>
-            <button type="button" class="day-btn" data-day="tue">Tue</button>
-            <button type="button" class="day-btn" data-day="wed">Wed</button>
-            <button type="button" class="day-btn" data-day="thu">Thu</button>
-            <button type="button" class="day-btn" data-day="fri">Fri</button>
-            <button type="button" class="day-btn" data-day="sat">Sat</button>
-            <button type="button" class="day-btn" data-day="sun">Sun</button>
+        <div class="field" style="margin-bottom:10px">
+          <label>Schedule Type</label>
+          <div class="stype-btns" id="sf-type-btns">
+            <button type="button" class="stype-btn sel" data-type="recurring">🔁 Recurring (weekly)</button>
+            <button type="button" class="stype-btn" data-type="oneoff">📅 One-off (specific date)</button>
+          </div>
+        </div>
+        <div id="sf-recurring-section">
+          <div class="field">
+            <label>Days (leave all unselected = every day)</label>
+            <div class="day-btns" id="sf-days">
+              <button type="button" class="day-btn" data-day="mon">Mon</button>
+              <button type="button" class="day-btn" data-day="tue">Tue</button>
+              <button type="button" class="day-btn" data-day="wed">Wed</button>
+              <button type="button" class="day-btn" data-day="thu">Thu</button>
+              <button type="button" class="day-btn" data-day="fri">Fri</button>
+              <button type="button" class="day-btn" data-day="sat">Sat</button>
+              <button type="button" class="day-btn" data-day="sun">Sun</button>
+            </div>
+          </div>
+        </div>
+        <div id="sf-oneoff-section" style="display:none">
+          <div class="field">
+            <label>Date</label>
+            <input type="date" id="sf-date" style="max-width:200px">
           </div>
         </div>
         <div class="grid2" style="margin-bottom:14px">
@@ -1119,10 +1150,23 @@ fetch('/api/zetta/status_full',{credentials:'same-origin'})
 var _schedules = {{schedules_json|safe}};
 var _schedActive = {};
 
-function _schedDayLabel(days){
-  if(!days||!days.length) return 'Every day';
+function _schedDayLabel(sc){
+  if(sc.date){
+    var d=new Date(sc.date+'T00:00:00');
+    var days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    var months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return days[d.getDay()]+' '+d.getDate()+' '+months[d.getMonth()]+' '+d.getFullYear();
+  }
+  var days=sc.days||[];
+  if(!days.length) return 'Every day';
   var names={mon:'Mon',tue:'Tue',wed:'Wed',thu:'Thu',fri:'Fri',sat:'Sat',sun:'Sun'};
   return days.map(function(d){return names[d]||d;}).join(', ');
+}
+function _schedIsPast(sc){
+  if(!sc.date) return false;
+  var today=new Date(); today.setHours(0,0,0,0);
+  var d=new Date(sc.date+'T00:00:00'); d.setHours(0,0,0,0);
+  return d<today;
 }
 
 function renderSchedules(){
@@ -1135,13 +1179,18 @@ function renderSchedules(){
   _schedules.forEach(function(sc){
     var isActive=!!_schedActive[sc.studio_id]&&_schedActive[sc.studio_id].active_schedule_id===sc.id;
     var restOvr=isActive&&_schedActive[sc.studio_id].rest_override;
+    var isOneOff=!!(sc.date);
+    var isPast=_schedIsPast(sc);
+    var badges='';
+    if(isActive) badges+='<span class="sched-badge">'+(restOvr?'REST OVERRIDE':'ACTIVE')+'</span>';
+    if(isOneOff&&isPast) badges+='<span class="sched-badge past">PAST</span>';
+    else if(isOneOff) badges+='<span class="sched-badge oneoff">ONE-OFF</span>';
     html+='<div class="sched-row'+(isActive?' active-sched':'')+'" data-sched-id="'+sc.id+'">'
       +'<div class="sched-info">'
-      +'<div class="sched-name">'+_esc(sc.name||'Unnamed')
-      +(isActive?'<span class="sched-badge">'+(restOvr?'REST OVERRIDE':'ACTIVE')+'</span>':'')+'</div>'
+      +'<div class="sched-name">'+_esc(sc.name||'Unnamed')+badges+'</div>'
       +'<div class="sched-detail">Studio: <strong>'+_esc(studioMap[sc.studio_id]||sc.studio_id)+'</strong>'
       +' → Brand: <strong>'+_esc(stationMap[sc.station_id]||sc.station_id)+'</strong></div>'
-      +'<div class="sched-detail">'+_schedDayLabel(sc.days)+' &nbsp;·&nbsp; '
+      +'<div class="sched-detail">'+_schedDayLabel(sc)+' &nbsp;·&nbsp; '
       +_esc(sc.start_time||'?')+' – '+_esc(sc.end_time||'?')+'</div>'
       +'</div>'
       +'<label class="tog" title="Enable/disable"><input type="checkbox" class="sched-tog"'+(sc.enabled?' checked':'')+' data-sid="'+sc.id+'"><span class="tog-sl"></span></label>'
@@ -1200,6 +1249,26 @@ function _populateSchedSelects(){
   _stations.forEach(function(s){st.innerHTML+='<option value="'+s.id+'">'+_esc(s.name||s.id)+'</option>';});
 }
 
+// Schedule type toggle (Recurring / One-off)
+(function(){
+  var typeBtns=document.getElementById('sf-type-btns');
+  var recSec=document.getElementById('sf-recurring-section');
+  var oofSec=document.getElementById('sf-oneoff-section');
+  var dateInp=document.getElementById('sf-date');
+  // Default date to today
+  var _today=new Date();
+  dateInp.value=_today.getFullYear()+'-'+String(_today.getMonth()+1).padStart(2,'0')+'-'+String(_today.getDate()).padStart(2,'0');
+  typeBtns.addEventListener('click',function(e){
+    var btn=e.target.closest('.stype-btn');
+    if(!btn) return;
+    typeBtns.querySelectorAll('.stype-btn').forEach(function(b){b.classList.remove('sel');});
+    btn.classList.add('sel');
+    var isOneOff=btn.dataset.type==='oneoff';
+    recSec.style.display=isOneOff?'none':'block';
+    oofSec.style.display=isOneOff?'block':'none';
+  });
+})();
+
 // Day button toggle
 document.getElementById('sf-days').addEventListener('click',function(e){
   var btn=e.target.closest('.day-btn');
@@ -1226,14 +1295,18 @@ document.getElementById('sf-save-btn').addEventListener('click',function(){
   var station=document.getElementById('sf-station').value;
   var start=document.getElementById('sf-start').value;
   var end=document.getElementById('sf-end').value;
-  var days=[].slice.call(document.querySelectorAll('#sf-days .day-btn.sel'))
-    .map(function(b){return b.dataset.day;});
+  var selType=document.querySelector('#sf-type-btns .stype-btn.sel');
+  var isOneOff=selType&&selType.dataset.type==='oneoff';
+  var days=isOneOff?[]:
+    [].slice.call(document.querySelectorAll('#sf-days .day-btn.sel')).map(function(b){return b.dataset.day;});
+  var date=isOneOff?(document.getElementById('sf-date').value||''):'';
   if(!name){_msg('Enter a schedule name.',false);return;}
   if(!studio){_msg('Select a studio.',false);return;}
   if(!station){_msg('Select a brand.',false);return;}
+  if(isOneOff&&!date){_msg('Select a date.',false);return;}
   if(!start||!end){_msg('Set start and end times.',false);return;}
   if(start>=end){_msg('End time must be after start time.',false);return;}
-  _post('/api/brandscreen/schedule',{name:name,studio_id:studio,station_id:station,days:days,start_time:start,end_time:end})
+  _post('/api/brandscreen/schedule',{name:name,studio_id:studio,station_id:station,days:days,date:date,start_time:start,end_time:end})
     .then(function(r){return r.json();}).then(function(d){
       if(!d.ok){_msg(d.error||'Save failed',false);return;}
       _schedules.push(d.schedule);
@@ -1244,6 +1317,12 @@ document.getElementById('sf-save-btn').addEventListener('click',function(){
       document.getElementById('sf-days').querySelectorAll('.day-btn.sel').forEach(function(b){b.classList.remove('sel');});
       document.getElementById('sf-start').value='09:00';
       document.getElementById('sf-end').value='17:00';
+      // Reset type to Recurring
+      document.querySelectorAll('#sf-type-btns .stype-btn').forEach(function(b){b.classList.remove('sel');});
+      var firstType=document.querySelector('#sf-type-btns .stype-btn');
+      if(firstType) firstType.classList.add('sel');
+      document.getElementById('sf-recurring-section').style.display='block';
+      document.getElementById('sf-oneoff-section').style.display='none';
       document.getElementById('add-sched-body').style.display='none';
       var arrow=document.getElementById('add-sched-arrow');
       if(arrow) arrow.textContent='▼';
@@ -2299,8 +2378,17 @@ def register(app, ctx):
             return jsonify({"error": "Studio not found"}), 400
         if not station_id or not _get_station(cfg, station_id):
             return jsonify({"error": "Station not found"}), 400
-        valid_days = {"mon","tue","wed","thu","fri","sat","sun"}
-        days = [d for d in (data.get("days") or []) if d in valid_days]
+        sched_date = (data.get("date") or "").strip()
+        if sched_date:
+            # Validate YYYY-MM-DD format
+            try:
+                _dt.datetime.strptime(sched_date, "%Y-%m-%d")
+            except ValueError:
+                return jsonify({"error": "Invalid date format, expected YYYY-MM-DD"}), 400
+            days = []   # days ignored for one-off schedules
+        else:
+            valid_days = {"mon","tue","wed","thu","fri","sat","sun"}
+            days = [d for d in (data.get("days") or []) if d in valid_days]
         start = (data.get("start_time") or "00:00").strip()
         end   = (data.get("end_time")   or "23:59").strip()
         sched = {
@@ -2308,6 +2396,7 @@ def register(app, ctx):
             "name":       (data.get("name") or "Schedule").strip()[:80],
             "studio_id":  studio_id,
             "station_id": station_id,
+            "date":       sched_date,
             "days":       days,
             "start_time": start,
             "end_time":   end,
@@ -2326,7 +2415,7 @@ def register(app, ctx):
         if not sched:
             return jsonify({"error": "Schedule not found"}), 404
         data  = request.get_json(force=True) or {}
-        for k in ("name", "days", "start_time", "end_time", "enabled",
+        for k in ("name", "days", "date", "start_time", "end_time", "enabled",
                   "studio_id", "station_id"):
             if k in data:
                 sched[k] = data[k]

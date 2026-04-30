@@ -26,6 +26,19 @@ recovery, when Zetta confirms a spot, and when the grace window expires.
 
 ---
 
+### Brand Screen plugin v1.3.14 — 2026-04-30
+
+**One-off (date-specific) schedule entries**
+
+Schedule entries now support a "One-off (specific date)" mode alongside the existing recurring weekly mode.
+
+- **Add Schedule form**: new 🔁 Recurring / 📅 One-off segmented toggle. Recurring shows the existing day-of-week buttons. One-off shows a date picker (defaults to today) and ignores day selection.
+- **Schedule evaluator** (`_check_schedules`): if a schedule entry has a `date` field set, it only activates on that exact date — day-of-week matching is skipped entirely. Recurring entries (no `date`) behave as before.
+- **Schedule list**: one-off entries show the formatted date (e.g. "Thu 30 Apr 2026") instead of day labels, with an amber **ONE-OFF** badge. Past one-off entries show a red **PAST** badge so you know they've already run.
+- **API**: `POST /api/brandscreen/schedule` and `PATCH /api/brandscreen/schedule/<id>` both accept the `date` field (`YYYY-MM-DD`). Date format is validated server-side.
+
+---
+
 ### Audio Router plugin v1.3.0 — 2026-04-30
 
 **Poll jitter, source level meters, LW duplicate check, fan-out extra destinations, idle status detail**
