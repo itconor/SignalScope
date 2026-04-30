@@ -26,6 +26,26 @@ recovery, when Zetta confirms a spot, and when the grace window expires.
 
 ---
 
+### SignalScope-3.5.194 — 2026-04-30
+
+**Plugin write-prefix registry — allow producer/plugin-role users to write to specific plugin APIs**
+
+Added `_plugin_write_prefixes: set[str]` module-level registry and `"register_plugin_write_prefix"` key to the plugin `ctx` dict. Plugins call `ctx["register_plugin_write_prefix"]("/api/myplugin/")` in their `register()` function to declare their API prefix as writable by producer/plugin-role users.
+
+`_rbac_enforce_readonly()` is updated to skip the write-block for plugin-role users (determined via `_plugin_role_url()`) when the request path starts with a registered prefix. Plain `"viewer"` role accounts remain fully read-only regardless.
+
+Brand Screen registers `/api/brandscreen/` so producer logins can change studio assignments, schedules, logos, and settings without needing admin access.
+
+---
+
+### Brand Screen plugin v1.3.15 — 2026-04-30
+
+**Producer/plugin-role users get write access to Brand Screen**
+
+Calls `ctx["register_plugin_write_prefix"]("/api/brandscreen/")` in `register()`. Producer logins can now create and edit studios, stations, schedules (including one-off entries), upload logos, and change studio assignments. Plain viewer accounts remain read-only.
+
+---
+
 ### Brand Screen plugin v1.3.14 — 2026-04-30
 
 **One-off (date-specific) schedule entries**

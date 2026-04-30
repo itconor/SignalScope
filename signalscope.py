@@ -2615,7 +2615,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.193"
+BUILD                  = "SignalScope-3.5.194"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -4552,6 +4552,13 @@ def admin_required(f):
     return decorated
 
 
+# URL prefixes that plugin-role users are allowed to write to.
+# Plugins register their own writable paths via ctx["register_plugin_write_prefix"].
+# Example: brandscreen registers "/api/brandscreen/" so producers can change
+# studio assignments and schedules without full admin access.
+_plugin_write_prefixes: set[str] = set()
+
+
 def _rbac_enforce_readonly():
     """Block viewer-role and plugin-role users from all write operations."""
     cfg = monitor.app_cfg
@@ -4566,6 +4573,10 @@ def _rbac_enforce_readonly():
     # Viewers may always POST to /logout
     if request.path in ("/logout",):
         return None
+    # Plugin-role users (e.g. Producer) may write to paths registered by plugins
+    if _plugin_write_prefixes and _plugin_role_url(_current_user_role()) is not None:
+        if any(request.path.startswith(pfx) for pfx in _plugin_write_prefixes):
+            return None
     # Block all other writes
     if request.path.startswith("/api/") or request.is_json:
         return jsonify({"error": "Read-only access — contact your administrator"}), 403
@@ -18282,6 +18293,13 @@ def _load_plugins():
         # poll endpoint.  Call ctx["register_cmd_handler"]("my_cmd", fn) where
         # fn(payload: dict) is called on the client when the command arrives.
         "register_cmd_handler": monitor.register_plugin_cmd_handler,
+        # Plugins that should be writable by producer/plugin-role users can
+        # register their API path prefix here.  The RBAC readonly enforcement
+        # will allow writes to these paths for plugin-role users only (not
+        # plain "viewer" role).  Pure viewer accounts remain fully read-only.
+        # Call ctx["register_plugin_write_prefix"]("/api/myplugin/") inside
+        # the plugin's register() function.
+        "register_plugin_write_prefix": _plugin_write_prefixes.add,
     }
     for py in sorted(plugins_dir.glob("*.py")):
         # Skip any backup/copy of the main app that may have landed here

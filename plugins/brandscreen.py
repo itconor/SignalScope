@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.14",
+    "version":  "1.3.15",
 }
 
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -2117,6 +2117,10 @@ def register(app, ctx):
     csrf_protect   = ctx["csrf_protect"]
     monitor        = ctx["monitor"]
     hub_server     = ctx["hub_server"]
+
+    # Allow producer/plugin-role users to write to brandscreen API routes so
+    # they can change studio assignments, schedules, etc. without needing admin.
+    ctx.get("register_plugin_write_prefix", lambda _: None)("/api/brandscreen/")
 
     api_auth = _make_api_auth()
 
