@@ -2,6 +2,28 @@
 
 ---
 
+### Audio Router 1.2.2 — 2026-04-30
+
+**Fix: dest client hub relay exits silently — scanner stream requires login**
+
+- `/hub/scanner/stream/<slot_id>` is protected by `@login_required` (browser
+  session cookie). ffmpeg on the dest node has no session cookie — it receives
+  a redirect to the login page, tries to decode HTML as s16le PCM, and exits
+  cleanly (exit code 0, no error logged). Dest routes therefore restarted
+  in a tight loop every ~8 s indefinitely.
+- Fix: added `GET /api/audiorouter/hub_stream/<rid>?token=HMAC` to the audio
+  router plugin itself. Authenticated with the same per-route HMAC token
+  already used for the direct P2P stream — no browser session needed.
+  Reads from the ListenSlot queue directly (`slot.get(timeout=1.0)`).
+- `_start_dest_route` now builds a token-authenticated hub stream URL
+  (`/api/audiorouter/hub_stream/<rid>?token=...`) and uses it as the hub
+  relay fallback instead of `/hub/scanner/stream/...`.
+- The scanner relay URL (`/hub/scanner/stream/`) is no longer used by the
+  audio router at all — it was only ever a relay path for the audio, never
+  the right auth mechanism for machine-to-machine use.
+
+---
+
 ### Audio Router 1.2.1 — 2026-04-30
 
 **Fix: Livewire (and all monitored) sources fail with ffmpeg ALSA error**

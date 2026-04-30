@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/audiorouter",
     "icon":     "🔀",
     "hub_only": True,
-    "version":  "1.2.1",
+    "version":  "1.2.2",
 }
 
 import hashlib
@@ -1030,6 +1030,59 @@ def register(app, ctx):
             },
         )
 
+    # ── Hub relay stream endpoint (dest clients pull via HMAC token) ──────────────
+    # The scanner relay at /hub/scanner/stream/<slot_id> requires @login_required
+    # (browser session) and cannot be used by ffmpeg on a remote dest node.
+    # This endpoint is authenticated with the same per-route HMAC token used
+    # by the direct P2P stream — no session needed.
+    # NOTE: each active cross-site route holds one Waitress thread here.
+    # With typical route counts (< 10) this is well within threads=64.
+
+    @app.get("/api/audiorouter/hub_stream/<rid>")
+    def audiorouter_hub_stream(rid):
+        import queue as _queue
+        from flask import Response
+        token    = (request.args.get("token") or
+                    request.headers.get("X-Audio-Token") or "")
+        expected = _compute_stream_token(secret, rid)
+        if not token or token != expected:
+            return jsonify({"error": "invalid token"}), 401
+
+        with _slots_lock:
+            slot_id = _route_slots.get(rid, "")
+        if not slot_id:
+            return jsonify({"error": "no relay slot for this route"}), 404
+
+        slot = listen_registry.get(slot_id)
+        if slot is None:
+            return jsonify({"error": "slot not found or expired"}), 404
+
+        def _gen():
+            try:
+                while not slot.closed:
+                    try:
+                        chunk = slot.get(timeout=1.0)
+                        if chunk:
+                            yield chunk
+                    except _queue.Empty:
+                        continue  # No data yet — keep the connection alive
+                    except Exception:
+                        if slot.closed:
+                            break
+                        continue
+            except GeneratorExit:
+                pass
+
+        return Response(
+            _gen(),
+            mimetype="application/octet-stream",
+            headers={
+                "Transfer-Encoding": "chunked",
+                "X-Audio-Format":    "s16le/48000/1",
+                "Cache-Control":     "no-cache",
+            },
+        )
+
     # ── Hub startup: re-create relay slots for existing enabled cross-site routes ─
     # _route_slots is in-memory only — it's empty on every server restart.
     # Without this, existing cross-site routes would report
@@ -1606,8 +1659,11 @@ def _start_dest_route(route: dict, rtp_url: str,
     """
     Cross-site DEST role.
     Routing priority (best latency first):
-      1. Direct P2P  — ffmpeg pulls PCM directly from source node (no hub audio)
-      2. Hub relay   — fallback when source node is not directly reachable
+      1. Direct P2P  — ffmpeg pulls PCM directly from source node via
+                       /api/audiorouter/stream/<rid>?token=HMAC (no hub audio)
+      2. Hub relay   — /api/audiorouter/hub_stream/<rid>?token=HMAC
+                       Token-authenticated hub endpoint (NOT /hub/scanner/stream/
+                       which requires browser session cookie).
 
     The source node reports its direct stream URL via the hub status API.
     The hub includes it in the poll response as 'direct_url'. We probe it
@@ -1616,8 +1672,14 @@ def _start_dest_route(route: dict, rtp_url: str,
     rid        = route["id"]
     slot_id    = route.get("slot_id", "")
     direct_url = (route.get("direct_url") or "").strip()
+    secret     = (route.get("hub_secret") or "").strip()
 
-    if not slot_id and not direct_url:
+    # Build the HMAC-authenticated hub relay URL (does NOT require login session)
+    token = _compute_stream_token(secret, rid)
+    hub_stream_url = (f"{hub_url}/api/audiorouter/hub_stream/{rid}?token={token}"
+                      if slot_id else "")
+
+    if not hub_stream_url and not direct_url:
         _report_status(hub_url, site_name, rid, "error", "No relay slot or direct URL yet")
         return
 
@@ -1627,7 +1689,7 @@ def _start_dest_route(route: dict, rtp_url: str,
         _report_status(hub_url, site_name, rid, "error", "ffmpeg not found")
         return
 
-    # ── Choose stream URL: prefer direct, fall back to hub relay ──────────────
+    # ── Choose stream URL: prefer direct P2P, fall back to hub relay ──────────
     if direct_url:
         monitor.log(f"[AudioRouter] Dest route {route['name']!r}: probing direct URL…")
         if _probe_direct_url(direct_url, timeout=2.5):
@@ -1639,10 +1701,10 @@ def _start_dest_route(route: dict, rtp_url: str,
                 f"[AudioRouter] Dest route {route['name']!r}: direct probe failed, "
                 f"falling back to hub relay"
             )
-            stream_url = f"{hub_url}/hub/scanner/stream/{slot_id}" if slot_id else ""
+            stream_url = hub_stream_url
             via = "hub"
     else:
-        stream_url = f"{hub_url}/hub/scanner/stream/{slot_id}" if slot_id else ""
+        stream_url = hub_stream_url
         via = "hub"
 
     if not stream_url:
