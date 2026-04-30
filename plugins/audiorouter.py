@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/audiorouter",
     "icon":     "🔀",
     "hub_only": True,
-    "version":  "1.1.0",
+    "version":  "1.1.1",
 }
 
 import hashlib
@@ -763,7 +763,6 @@ def register(app, ctx):
     # ── Hub API: client poll ───────────────────────────────────────────────────
 
     @app.get("/api/audiorouter/poll")
-    @login_required
     def audiorouter_poll():
         """
         Client polls this endpoint. Returns routes where this site is source or dest,
@@ -889,6 +888,25 @@ def register(app, ctx):
                 "Cache-Control":     "no-cache",
             },
         )
+
+    # ── Hub startup: re-create relay slots for existing enabled cross-site routes ─
+    # _route_slots is in-memory only — it's empty on every server restart.
+    # Without this, existing cross-site routes would report
+    # "No relay slot assigned yet" until the user toggles them.
+
+    if is_hub:
+        def _restore_slots():
+            try:
+                with _cfg_lock:
+                    saved = _load_cfg()
+                for r in saved.get("routes", []):
+                    if (r.get("enabled")
+                            and r.get("source_site") != r.get("dest_site")):
+                        _ensure_relay_slot(r, listen_registry, monitor)
+            except Exception as e:
+                monitor.log(f"[AudioRouter] Slot restore error: {e}")
+        threading.Thread(target=_restore_slots, daemon=True,
+                         name="ARSlotRestore").start()
 
     # ── Client: start routing daemon thread ───────────────────────────────────
 

@@ -2,6 +2,22 @@
 
 ---
 
+### Audio Router 1.1.1 — 2026-04-30
+
+**Fix: routes stuck at "idle"**
+
+- Removed `@login_required` from `/api/audiorouter/poll` — this is a
+  machine-to-machine API called by client nodes that have no browser
+  session. With auth enabled every poll was silently redirected to the
+  login page, leaving all routes permanently idle.
+- Hub startup now re-creates relay slots for all enabled cross-site routes
+  (`_restore_slots` thread). Previously `_route_slots` was in-memory only,
+  so a server restart left cross-site routes without a slot and the source
+  client would report "No relay slot assigned yet" on every poll until the
+  route was toggled off and on again.
+
+---
+
 ### Audio Router 1.1.0 — 2026-04-29
 
 **P2P direct routing — hub relay is now last resort**
