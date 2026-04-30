@@ -951,6 +951,15 @@ if (zdNp && zdNp.asset_type === 2) {
 
 **Rule**: The `threads=64` Waitress configuration is the current floor. If new persistent connections are added (WebSockets, SSE), review thread headroom before shipping.
 
+### Audio Router hub relay — never give ffmpeg a hub URL as `-i` (fixed 1.2.9)
+
+The old `hub_stream` endpoint held one Waitress thread open for the entire lifetime of each active cross-site Audio Router route (ffmpeg `-i hub_stream_url` → permanent HTTP connection → permanent thread hold). With N active routes = N permanently blocked threads, hub page loads and API calls queued behind them, causing the "timeouts and doesn't load" symptoms.
+
+Fix: dest client now uses `hub_chunks` (short-lived long-poll, ≤1.5 s per request). A background thread (`ARDestPoll-*`) fetches chunks and pipes them to ffmpeg stdin (`-i pipe:0`). Each hub thread is held for <100 ms (one chunk interval) then released.
+
+**Rule**: Never route ffmpeg directly to a hub URL (`-i http://hub/...`) for long-lived audio streams. Use the `hub_chunks` polling pattern: background thread + ffmpeg stdin pipe. One Waitress thread per chunk request, released after ≤1.5 s.
+**Rule**: `_stop_route_proc` MUST signal the `ARDestPoll-*` stop event BEFORE killing ffmpeg — the poll thread writes to ffmpeg stdin; killing ffmpeg first causes a race where the thread tries to write to a closed pipe and logs spurious BrokenPipeError.
+
 ### Jinja2 in JavaScript
 
 **Rule**: Never put `{{...}}` Jinja2 expressions inside JS `/* */` block comments. Jinja2 evaluates template expressions everywhere in the template string — including inside comments. If the rendered value contains `*/` (for example, `{{topnav()}}` renders full nav HTML that contains `*/` in CSS or JS), it prematurely closes the JS block comment, causing a silent SyntaxError that blocks the entire script. Plain-text comments describing Jinja2 calls are fine; evaluated expressions are not.
