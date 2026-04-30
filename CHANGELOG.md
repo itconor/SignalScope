@@ -2,6 +2,27 @@
 
 ---
 
+### Audio Router 1.2.1 — 2026-04-30
+
+**Fix: Livewire (and all monitored) sources fail with ffmpeg ALSA error**
+
+- `_input_type()` returned `"alsa"` for a numeric device_index (e.g. `"7503"`,
+  a Livewire stream ID). ffmpeg then ran `-f alsa -i 7503` → exit 251 "Input/output
+  error". Same failure would hit any ALSA or RTP/Livewire source.
+- Root fix: `_start_route` now always tries the PCM buffer path first for
+  source/local roles when `_find_input` finds the stream in SignalScope's
+  monitoring loop. SignalScope already decodes the audio; re-opening the raw device
+  is both unnecessary and likely to fail (monitoring loop holds it open).
+  Direct ffmpeg is now a fallback only for streams not actively monitored locally.
+- Covers all input types uniformly: Livewire (numeric ID), ALSA, DAB, FM,
+  HTTP, RTP — any stream SignalScope monitors works as a route source.
+- `_stream_buf_chunks` now downmixes stereo chunks to mono. `_audio_channels`
+  is read from the InputConfig; interleaved L/R float32 is averaged to mono
+  before int16 conversion. Previously stereo chunks (Livewire, ALSA stereo)
+  would have produced double-length mono at half the correct pitch.
+
+---
+
 ### Audio Router 1.2.0 — 2026-04-30
 
 **UI overhaul: rich route cards with per-side status, ffmpeg error capture**

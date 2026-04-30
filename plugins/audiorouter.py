@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/audiorouter",
     "icon":     "🔀",
     "hub_only": True,
-    "version":  "1.2.0",
+    "version":  "1.2.1",
 }
 
 import hashlib
@@ -141,13 +141,17 @@ def _find_input(source_stream: str, monitor):
 
 def _stream_buf_chunks(inp, stop: threading.Event):
     """
-    Generator that yields int16 LE PCM bytes from inp._stream_buffer.
+    Generator that yields int16 LE mono PCM bytes from inp._stream_buffer.
     Blocks between SignalScope chunk deliveries (~0.5 s each).
     Uses inp._live_chunk_seq as a low-overhead change signal.
+
+    Handles both mono (float32 1-D) and stereo (float32 interleaved L/R)
+    chunks — stereo is downmixed to mono before conversion.
     """
     if not _HAVE_NP:
         return
     seen_seq = getattr(inp, "_live_chunk_seq", 0)
+    n_ch = int(getattr(inp, "_audio_channels", 1) or 1)
     while not stop.is_set():
         cur_seq = getattr(inp, "_live_chunk_seq", seen_seq)
         if cur_seq <= seen_seq:
@@ -157,7 +161,11 @@ def _stream_buf_chunks(inp, stop: threading.Event):
         if n_new > 0:
             for c in list(inp._stream_buffer)[-n_new:]:
                 try:
-                    yield (_np.clip(c * 32767, -32768, 32767)
+                    arr = _np.asarray(c, dtype=_np.float32).ravel()
+                    # Downmix stereo to mono: interleaved [L, R, L, R, ...]
+                    if n_ch == 2 and arr.size % 2 == 0:
+                        arr = (arr[0::2] + arr[1::2]) * 0.5
+                    yield (_np.clip(arr * 32767, -32768, 32767)
                            .astype(_np.int16).tobytes())
                 except Exception:
                     pass
@@ -1250,25 +1258,32 @@ def _start_route(route: dict, hub_url: str, site_name: str, monitor, listen_regi
 
     itype = _input_type(device_index) if role in ("local", "source") else "relay"
 
-    if itype in ("fm", "dab"):
-        # DAB/FM: audio is already decoded by SignalScope's monitoring loop.
-        # Read from inp._stream_buffer (float32 PCM) instead of spawning ffmpeg
-        # on the raw dab:// / fm:// URI which ffmpeg cannot parse.
+    # For source/local roles: always prefer reading from SignalScope's already-decoded
+    # PCM buffer (_stream_buffer) over spawning a new process on the raw device.
+    #
+    # This is the correct approach for ALL input types:
+    #   • DAB / FM      — buffer-only (raw device URIs can't be opened by ffmpeg)
+    #   • Livewire      — device_index is a numeric stream ID (e.g. "7503"), not a
+    #                     usable ffmpeg input; SignalScope already decodes the RTP
+    #   • ALSA          — monitoring loop holds the device open; a second open fails
+    #   • HTTP / RTP    — same stream, no need to reconnect independently
+    #
+    # Direct ffmpeg fallback only runs when the input isn't actively monitored
+    # locally (inp not found) or numpy is unavailable.
+    if role in ("local", "source") and _HAVE_NP:
         inp = _find_input(source_stream, monitor)
-        if inp is None:
-            monitor.log(f"[AudioRouter] Route {route['name']!r}: input {source_stream!r} not found locally")
-            _report_status(hub_url, site_name, rid, "error",
-                           f"Input '{source_stream}' not found on this node")
+        if inp is not None:
+            monitor.log(
+                f"[AudioRouter] Route {route['name']!r}: "
+                f"using PCM buffer (itype={itype})"
+            )
+            if role == "local":
+                _start_local_route_buffered(route, inp, rtp_url, hub_url, site_name, monitor)
+            else:
+                _start_source_route_buffered(route, inp, hub_url, site_name, monitor,
+                                             cfg_ss=monitor.app_cfg)
             return
-        if not _HAVE_NP:
-            _report_status(hub_url, site_name, rid, "error", "numpy required for DAB/FM routing")
-            return
-        if role == "local":
-            _start_local_route_buffered(route, inp, rtp_url, hub_url, site_name, monitor)
-        else:  # source
-            _start_source_route_buffered(route, inp, hub_url, site_name, monitor,
-                                         cfg_ss=monitor.app_cfg)
-        return
+        # Input not found locally — fall through to direct ffmpeg below
 
     if role == "local":
         _start_local_route(route, device_index, itype, rtp_url, hub_url, site_name, monitor)
