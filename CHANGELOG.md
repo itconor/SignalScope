@@ -2,6 +2,21 @@
 
 ---
 
+### Brand Screen plugin v1.3.21 — 2026-04-30
+
+**Multi-strip RGBW DMX support per studio**
+
+Replaces the single R/G/B channel config with an unlimited list of named DMX strips, each with individual R, G, B, and W channel assignments.
+
+- **Named strips** — give each LED strip a label (e.g. "Back Wall", "Desk Edge") so the rig is self-documenting in the config.
+- **RGBW support** — each strip has a W (white) channel field. Set W=0 for standard RGB strips. When W > 0, the plugin automatically extracts the white component from the brand colour using the standard RGBW decomposition (`W = min(R,G,B)`) and sends the adjusted R/G/B alongside W — so the LED output matches the brand colour without colour cast.
+- **Multiple strips** — use "+ Add Strip" to add as many as needed. Each strip gets the same brand colour treatment, so all strips in a studio change together. Auto-increment on add: channels are suggested based on the last configured strip so you don't have to calculate offsets manually.
+- **Delete** — remove any strip with the × button.
+- All strips are included in Preview on LEDs and Save as Cue commands.
+- Migration: studios with the old single R/G/B config (v1.3.19–1.3.20) are transparently treated as a single unnamed strip until saved with the new UI.
+
+---
+
 ### Brand Screen plugin v1.3.20 — 2026-04-30
 
 **CueServer scene browser, DMX colour preview, and one-click scene creation**

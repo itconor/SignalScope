@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.20",
+    "version":  "1.3.21",
 }
 
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -117,9 +117,10 @@ def _new_studio():
         "sb_studio_id":    "",   # linked studioboard studio for mic-live detection
         "cueserver_site": "",    # hub site name where CueServer lives
         "cueserver_host": "",    # CueServer hostname / IP on that site's LAN
-        "cs_dmx_r":       1,     # DMX channel for Red (1–512)
-        "cs_dmx_g":       2,     # DMX channel for Green (1–512)
-        "cs_dmx_b":       3,     # DMX channel for Blue (1–512)
+        # List of DMX strips: [{name, ch_r, ch_g, ch_b, ch_w}]
+        # ch_w = 0 means no white channel (RGB only).
+        # ch_w > 0 enables RGBW — white component extracted from the brand colour.
+        "cs_strips": [],
     }
 
 def _ensure_api_key(cfg):
@@ -284,19 +285,43 @@ def _cueserver_trigger(studio, station):
     with _cs_lock:
         _cs_pending[cs_site] = {"host": cs_host, "cmd": cs_cmd}
 
-def _cs_colour_cmd(hex_colour, r_ch, g_ch, b_ch):
-    """Build the CueScript command that sets RGB DMX channels from a hex colour.
+def _cs_colour_cmd(hex_colour, strips):
+    """Build a CueScript command that sets all configured DMX strips from a hex colour.
 
-    CueScript uses percentage values (0–100), so 255 → 100, 128 → 50, etc.
-    Example result: "Channel 1 At 9 Channel 2 At 66 Channel 3 At 100"
+    Each strip is a dict {name, ch_r, ch_g, ch_b, ch_w} where:
+    - ch_r/g/b  = DMX channel numbers (1–512); 0 = skip that channel
+    - ch_w      = White channel; 0 = not fitted (RGB mode).
+                  When ch_w > 0, RGBW mode: the minimum of R/G/B is extracted
+                  as white and subtracted from each colour channel so the
+                  combined output matches the intended hue without over-driving.
+
+    CueScript percentage values: 0–100 (255 → 100, 128 → 50, etc.)
+
+    Example (two RGBW strips, brand colour #17a8ff):
+      "Channel 1 At 9 Channel 2 At 66 Channel 3 At 100 Channel 4 At 9
+       Channel 5 At 9 Channel 6 At 66 Channel 7 At 100 Channel 8 At 9"
     """
     r, g, b = _hex_rgb(hex_colour)
-    r_pct = round(r / 255 * 100)
-    g_pct = round(g / 255 * 100)
-    b_pct = round(b / 255 * 100)
-    return (f"Channel {r_ch} At {r_pct} "
-            f"Channel {g_ch} At {g_pct} "
-            f"Channel {b_ch} At {b_pct}")
+    parts = []
+    for strip in strips:
+        ch_r = int(strip.get("ch_r") or 0)
+        ch_g = int(strip.get("ch_g") or 0)
+        ch_b = int(strip.get("ch_b") or 0)
+        ch_w = int(strip.get("ch_w") or 0)
+
+        if ch_w:
+            # RGBW: extract white component from the colour
+            w_raw = min(r, g, b)
+            r_c, g_c, b_c = r - w_raw, g - w_raw, b - w_raw
+        else:
+            r_c, g_c, b_c, w_raw = r, g, b, 0
+
+        if ch_r: parts.append(f"Channel {ch_r} At {round(r_c / 255 * 100)}")
+        if ch_g: parts.append(f"Channel {ch_g} At {round(g_c / 255 * 100)}")
+        if ch_b: parts.append(f"Channel {ch_b} At {round(b_c / 255 * 100)}")
+        if ch_w: parts.append(f"Channel {ch_w} At {round(w_raw / 255 * 100)}")
+
+    return " ".join(parts)
 
 def _parse_cue_list_xml(raw):
     """Best-effort parser for CueServer's /get.cgi?req=csi XML response.
@@ -1117,6 +1142,7 @@ input[type=text]:focus,input[type=url]:focus,input[type=number]:focus,select:foc
 .cs-scene-list tr:hover td{background:rgba(23,52,95,.35);cursor:pointer}
 .cs-scene-list .cue-num{font-family:monospace;color:var(--acc);min-width:40px}
 .cs-scene-list .cue-use{font-size:10px;color:var(--acc);cursor:pointer;padding:1px 6px;border:1px solid var(--acc);border-radius:4px;background:transparent;font-family:inherit}
+.cs-strip-row input[type=number]{width:auto}  /* override global width:100% for inline strip inputs */
 input[type=color]{background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:2px 4px;height:32px;cursor:pointer;width:100%}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
@@ -1461,15 +1487,14 @@ function _studioForm(sd){
     +'<p class="hint" style="margin-top:4px">IP address or hostname of the CueServer appliance on the studio LAN.</p>'
     +'</div>'
     +'</div>'
-    +'<div class="slabel" style="margin-bottom:6px">DMX Channels (R / G / B)</div>'
-    +'<div class="grid3" style="margin-bottom:12px">'
-    +'<div class="field"><label>Red Channel</label>'
-    +'<input type="number" id="sd-cs-r-'+sd.id+'" value="'+(sd.cs_dmx_r||1)+'" min="1" max="512" style="width:100%"></div>'
-    +'<div class="field"><label>Green Channel</label>'
-    +'<input type="number" id="sd-cs-g-'+sd.id+'" value="'+(sd.cs_dmx_g||2)+'" min="1" max="512" style="width:100%"></div>'
-    +'<div class="field"><label>Blue Channel</label>'
-    +'<input type="number" id="sd-cs-b-'+sd.id+'" value="'+(sd.cs_dmx_b||3)+'" min="1" max="512" style="width:100%"></div>'
+    +'<div class="slabel" style="margin-bottom:6px">DMX Strips <span style="font-weight:400;font-size:10px;text-transform:none;letter-spacing:0;color:var(--mu)">— add one row per LED strip (RGBW or RGB; W=0 if no white channel)</span></div>'
+    +'<div id="sd-cs-strips-'+sd.id+'">'
+    +(function(){
+      var strips=sd.cs_strips&&sd.cs_strips.length?sd.cs_strips:[];
+      return strips.map(function(strip,i){return _csStripRowHtml(sd.id,strip,i);}).join('');
+    })()
     +'</div>'
+    +'<button class="btn bg bs" data-action="cs-add-strip" data-sid="'+sd.id+'" style="margin-bottom:12px">+ Add Strip</button>'
     +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
     +'<button class="btn bg bs" data-action="cs-fetch-scenes" data-sid="'+sd.id+'">🔍 Fetch Scenes</button>'
     +'<span id="sd-cs-status-'+sd.id+'" style="font-size:11px;color:var(--mu)"></span>'
@@ -1678,9 +1703,7 @@ function _saveSd(sid){
     sb_studio_id:_v('sd-sbst-'+sid)||'',
     cueserver_site:_v('sd-cs-site-'+sid)||'',
     cueserver_host:_v('sd-cs-host-'+sid)||'',
-    cs_dmx_r:parseInt(_v('sd-cs-r-'+sid)||1,10)||1,
-    cs_dmx_g:parseInt(_v('sd-cs-g-'+sid)||2,10)||2,
-    cs_dmx_b:parseInt(_v('sd-cs-b-'+sid)||3,10)||3,
+    cs_strips:_csGetStrips(sid),
   }).then(function(r){return r.json();}).then(function(d){
     if(d.error){_msg(d.error,false);return;}
     Object.assign(sd,d.studio); renderStudios(); renderApiRef(); _msg('Saved.',true);
@@ -1776,8 +1799,66 @@ function _regenApiKey(){
   });
 }
 
-// ── CueServer admin helpers ────────────────────────────────────────────────
+// ── CueServer strip management ────────────────────────────────────────────
 var _csSceneCache={};   // studio_id → [{num,label}]
+
+function _csStripRowHtml(studio_id, strip, idx){
+  strip=strip||{};
+  return '<div class="cs-strip-row" style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">'
+    +'<input class="cs-sr-name" type="text" value="'+_esc(strip.name||'Strip '+(idx+1))+'" placeholder="Strip name" style="width:90px;font-size:12px">'
+    +'<span style="font-size:10px;color:var(--mu)">R</span>'
+    +'<input class="cs-sr-r" type="number" min="0" max="512" value="'+(strip.ch_r||0)+'" style="width:54px;font-size:12px" title="Red channel (0=off)">'
+    +'<span style="font-size:10px;color:var(--mu)">G</span>'
+    +'<input class="cs-sr-g" type="number" min="0" max="512" value="'+(strip.ch_g||0)+'" style="width:54px;font-size:12px" title="Green channel (0=off)">'
+    +'<span style="font-size:10px;color:var(--mu)">B</span>'
+    +'<input class="cs-sr-b" type="number" min="0" max="512" value="'+(strip.ch_b||0)+'" style="width:54px;font-size:12px" title="Blue channel (0=off)">'
+    +'<span style="font-size:10px;color:var(--mu)">W</span>'
+    +'<input class="cs-sr-w" type="number" min="0" max="512" value="'+(strip.ch_w||0)+'" style="width:54px;font-size:12px" title="White channel (0=not fitted)">'
+    +'<span style="font-size:10px;color:var(--mu);margin-right:4px">W=0 if RGB only</span>'
+    +'<button class="btn bd bs" data-action="cs-del-strip" data-sid="'+_esc(studio_id)+'">×</button>'
+    +'</div>';
+}
+
+function _csGetStrips(studio_id){
+  var container=document.getElementById('sd-cs-strips-'+studio_id);
+  if(!container) return [];
+  var strips=[];
+  container.querySelectorAll('.cs-strip-row').forEach(function(row){
+    strips.push({
+      name: (row.querySelector('.cs-sr-name').value||'').trim()||'Strip',
+      ch_r: parseInt(row.querySelector('.cs-sr-r').value,10)||0,
+      ch_g: parseInt(row.querySelector('.cs-sr-g').value,10)||0,
+      ch_b: parseInt(row.querySelector('.cs-sr-b').value,10)||0,
+      ch_w: parseInt(row.querySelector('.cs-sr-w').value,10)||0,
+    });
+  });
+  return strips;
+}
+
+function _csAddStrip(studio_id){
+  var container=document.getElementById('sd-cs-strips-'+studio_id);
+  if(!container) return;
+  var idx=container.querySelectorAll('.cs-strip-row').length;
+  // Auto-increment: first free channel block of 4
+  var lastW=0;
+  container.querySelectorAll('.cs-strip-row').forEach(function(row){
+    var w=parseInt(row.querySelector('.cs-sr-w').value,10)||0;
+    var b=parseInt(row.querySelector('.cs-sr-b').value,10)||0;
+    lastW=Math.max(lastW,w,b);
+  });
+  var start=lastW?lastW+1:1;
+  var newStrip={name:'Strip '+(idx+1),ch_r:start,ch_g:start+1,ch_b:start+2,ch_w:start+3};
+  var div=document.createElement('div');
+  div.innerHTML=_csStripRowHtml(studio_id,newStrip,idx);
+  container.appendChild(div.firstChild);
+}
+
+function _csDelStrip(btn){
+  var row=btn.closest('.cs-strip-row');
+  if(row) row.remove();
+}
+
+// ── CueServer admin helpers ────────────────────────────────────────────────
 
 function _csRenderScenes(scenes, containerId, onClickCue){
   var el=document.getElementById(containerId); if(!el) return;
@@ -1909,6 +1990,8 @@ document.addEventListener('click',function(e){
   else if(a==='del-logo')    _delLogo(sid);
   else if(a==='copy-api-key')  _copyApiKey();
   else if(a==='regen-api-key') _regenApiKey();
+  else if(a==='cs-add-strip')    _csAddStrip(sid);
+  else if(a==='cs-del-strip')    _csDelStrip(btn);
   else if(a==='cs-fetch-scenes') _csFetchScenes(sid);
   else if(a==='cs-preview')      _csPreview(sid);
   else if(a==='cs-record')       _csRecord(sid);
@@ -3368,18 +3451,27 @@ def register(app, ctx):
         if not s:
             return jsonify({"error": "Studio not found"}), 404
         data = request.get_json(force=True) or {}
-        for k in ("name", "station_id", "sb_studio_id",
-                  "cueserver_site", "cueserver_host",
-                  "cs_dmx_r", "cs_dmx_g", "cs_dmx_b"):
+        for k in ("name", "station_id", "sb_studio_id", "cueserver_site", "cueserver_host"):
             if k in data:
-                # DMX channel fields must be integers in range 1–512
-                if k in ("cs_dmx_r", "cs_dmx_g", "cs_dmx_b"):
-                    try:
-                        s[k] = max(1, min(512, int(data[k])))
-                    except (TypeError, ValueError):
-                        pass
-                else:
-                    s[k] = data[k]
+                s[k] = data[k]
+        # cs_strips: validate each strip's channel numbers
+        if "cs_strips" in data:
+            raw_strips = data["cs_strips"] if isinstance(data["cs_strips"], list) else []
+            clean = []
+            for strip in raw_strips:
+                if not isinstance(strip, dict):
+                    continue
+                def _ch(v):
+                    try: return max(0, min(512, int(v)))
+                    except (TypeError, ValueError): return 0
+                clean.append({
+                    "name": str(strip.get("name") or "Strip")[:40],
+                    "ch_r": _ch(strip.get("ch_r")),
+                    "ch_g": _ch(strip.get("ch_g")),
+                    "ch_b": _ch(strip.get("ch_b")),
+                    "ch_w": _ch(strip.get("ch_w")),
+                })
+            s["cs_strips"] = clean
         _cfg_save(cfg)
         _notify_studio(studio_id)
         return jsonify({"ok": True, "studio": s})
@@ -3657,33 +3749,38 @@ def register(app, ctx):
         data   = request.get_json(force=True) or {}
         action = (data.get("action") or "").strip()
 
+        # Resolve strips — migrate old single-channel config transparently
+        strips = studio.get("cs_strips") or []
+        if not strips:
+            # Legacy single-strip migration (cs_dmx_r/g/b from v1.3.19)
+            r_ch = int(studio.get("cs_dmx_r") or 1)
+            g_ch = int(studio.get("cs_dmx_g") or 2)
+            b_ch = int(studio.get("cs_dmx_b") or 3)
+            strips = [{"name": "Strip 1", "ch_r": r_ch, "ch_g": g_ch, "ch_b": b_ch, "ch_w": 0}]
+
         if action == "poll_scenes":
             cmd = {"action": "poll_scenes", "host": cs_host}
 
         elif action == "preview_colour":
-            colour = (data.get("colour") or "#ffffff").strip()
-            r_ch = int(studio.get("cs_dmx_r") or 1)
-            g_ch = int(studio.get("cs_dmx_g") or 2)
-            b_ch = int(studio.get("cs_dmx_b") or 3)
-            cmd = {
-                "action":  "preview_colour",
-                "host":    cs_host,
-                "cs_cmd":  _cs_colour_cmd(colour, r_ch, g_ch, b_ch),
-            }
+            colour  = (data.get("colour") or "#ffffff").strip()
+            cs_cmd  = _cs_colour_cmd(colour, strips)
+            if not cs_cmd:
+                return jsonify({"error": "No DMX strips configured for this studio"}), 400
+            cmd = {"action": "preview_colour", "host": cs_host, "cs_cmd": cs_cmd}
 
         elif action == "record_cue":
             colour  = (data.get("colour") or "#ffffff").strip()
             cue_num = int(data.get("cue_num") or 0)
             if cue_num <= 0:
                 return jsonify({"error": "Invalid cue number"}), 400
-            r_ch = int(studio.get("cs_dmx_r") or 1)
-            g_ch = int(studio.get("cs_dmx_g") or 2)
-            b_ch = int(studio.get("cs_dmx_b") or 3)
+            cs_cmd = _cs_colour_cmd(colour, strips)
+            if not cs_cmd:
+                return jsonify({"error": "No DMX strips configured for this studio"}), 400
             cmd = {
-                "action":   "record_cue",
-                "host":     cs_host,
-                "cs_cmd":   _cs_colour_cmd(colour, r_ch, g_ch, b_ch),
-                "cue_num":  cue_num,
+                "action":    "record_cue",
+                "host":      cs_host,
+                "cs_cmd":    cs_cmd,
+                "cue_num":   cue_num,
                 "studio_id": studio_id,
             }
 
