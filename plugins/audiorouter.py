@@ -17,7 +17,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/audiorouter",
     "icon":     "🔀",
     "hub_only": True,
-    "version":  "1.1.3",
+    "version":  "1.1.4",
 }
 
 import hashlib
@@ -226,7 +226,7 @@ def _compute_stream_token(secret: str, route_id: str) -> str:
 def _my_direct_url(cfg_ss, route_id: str, token: str) -> str:
     """Best-effort URL that peer nodes can use to pull PCM from this node directly."""
     import socket
-    port = getattr(getattr(cfg_ss, "network", None), "port", 8080) or 8080
+    port = _SS_PORT
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(0.1)
@@ -1063,13 +1063,15 @@ def _get_device_index(source_site: str, source_stream: str,
     return ""
 
 
+_SS_PORT = 5000  # SignalScope always binds on port 5000 (see signalscope.py)
+
+
 def _self_url(cfg_ss) -> str:
     """Best-effort URL for reaching this node (hub_url or localhost fallback)."""
     hub_url = (getattr(getattr(cfg_ss, "hub", None), "hub_url", "") or "").rstrip("/")
     if hub_url:
         return hub_url
-    port = getattr(getattr(cfg_ss, "network", None), "port", 8080) or 8080
-    return f"http://127.0.0.1:{port}"
+    return f"http://127.0.0.1:{_SS_PORT}"
 
 
 # ── Client routing logic ───────────────────────────────────────────────────────

@@ -2,6 +2,22 @@
 
 ---
 
+### Audio Router 1.1.4 — 2026-04-30
+
+**Fix: hub self-poll "Connection refused" / routes stay idle**
+
+- `_self_url()` was returning `http://127.0.0.1:8080` as its loopback
+  fallback — but SignalScope always binds on port **5000**. The hub's
+  client thread polled a port where nothing was listening, getting
+  "Connection refused" on every cycle. Added `_SS_PORT = 5000` constant
+  used by both `_self_url()` and `_my_direct_url()`.
+- Consequence: any route where the hub machine is the source or destination
+  never started (hub could not poll its own routes). Cross-site routes
+  between two remote clients were unaffected — those clients poll the hub
+  at the configured `hub_url`, which was always correct.
+
+---
+
 ### Audio Router 1.1.3 — 2026-04-30
 
 **DAB and FM sources now supported**
