@@ -2,6 +2,15 @@
 
 ---
 
+### Brand Screen plugin v1.3.33 — 2026-05-01
+
+**Fix TV light on-value — use DMX 255 not 100**
+
+- `_cs_tv_cmd` was sending `Channel N At 100` for the white channel when turning on. CueScript `At` takes raw DMX 0–255, so `At 100` was only ~39% brightness. Changed to `At 255` (full on), matching the intended (warm=0, white=255) state
+- Warm white channel command is now emitted before the white channel in the CueScript string, matching the (warm, white) ordering
+
+---
+
 ### Brand Screen plugin v1.3.32 — 2026-05-01
 
 **Real-time TV light state sync from CueServer DMX**

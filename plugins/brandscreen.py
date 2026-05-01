@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.32",
+    "version":  "1.3.33",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -443,10 +443,10 @@ def _cs_tv_cmd(studio, on):
     for fix in fixtures:
         ch_white = int(fix.get("ch_white") or 0)
         ch_warm  = int(fix.get("ch_warm")  or 0)
-        if ch_white:
-            parts.append(f"Channel {ch_white} At {'100' if on else '0'}")
         if ch_warm:
             parts.append(f"Channel {ch_warm} At 0")
+        if ch_white:
+            parts.append(f"Channel {ch_white} At {'255' if on else '0'}")
     if not parts:
         return ""
     return " ".join(parts) + " Time 1"
