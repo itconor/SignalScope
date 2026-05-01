@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.59",
+    "version":  "1.3.60",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3320,71 +3320,84 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
           .then(function(a){
             if(a.answer){
               console.log('[BS-video] SDP answer received! Setting remote description...');
-              // SRS WHEP generates non-JSEP-compliant SDP: codec attributes
-              // (a=rtpmap, a=fmtp, a=rtcp-fb), SSRC attrs, and ICE candidates
-              // all appear at the SESSION level (before any m= line). Chrome's
-              // WebRTC parser requires them at MEDIA level and rejects them at
-              // session level with "Invalid SDP line".
-              // Strategy: whitelist the small set of a= attrs that ARE valid at
-              // session level; strip everything else before the first m= line.
-              // Candidates are stripped everywhere and re-added via addIceCandidate.
+              // SRS WHEP generates a non-JSEP-compliant answer:
+              //   - Full audio+video m= sections even for a video-only offer
+              //   - Audio codec attrs (rtpmap/fmtp/rtcp-fb/ssrc) mixed into the video section
+              //   - ICE candidates and codec attrs at SESSION level (Chrome requires media level)
+              // We surgically clean the SDP: keep only video m= sections, strip all
+              // audio contamination, fix session-level attrs, inject candidates separately.
               var _sdp=a.answer.replace(/\\r?\\n/g,'\\r\\n');
               var _lines=_sdp.split('\\r\\n');
-              // Pass 0: find firstMid + build PT→codec map from a=rtpmap lines
-              var _firstMid='0',_inM=false,_rtpmap={};
+              // Pass 0: build PT→codec map and collect video section mids
+              var _rtpmap={},_videoMids=[];
+              var _p0type=null,_p0mid=null;
               for(var _fi=0;_fi<_lines.length;_fi++){
                 var _fl=_lines[_fi];
-                if(_fl.indexOf('m=')===0)_inM=true;
-                if(_inM&&_fl.indexOf('a=mid:')===0&&_firstMid==='0'){_firstMid=_fl.slice(6).trim();}
+                if(_fl.indexOf('m=')===0){
+                  _p0type=_fl.split(' ')[0].slice(2); // 'video','audio','application'...
+                  _p0mid=null;
+                }
+                if(_fl.indexOf('a=mid:')===0&&_p0mid===null){
+                  _p0mid=_fl.slice(6).trim();
+                  if(_p0type==='video'&&_videoMids.indexOf(_p0mid)<0)_videoMids.push(_p0mid);
+                }
                 if(_fl.indexOf('a=rtpmap:')===0){
                   var _rp=_fl.slice(9).split(' ');
                   if(_rp.length>=2)_rtpmap[_rp[0]]=_rp[1].split('/')[0].toLowerCase();
                 }
               }
-              // Video codecs — PTs mapping to anything else are audio/non-video and
-              // should be stripped from the video m= section entirely
+              var _firstVidMid=_videoMids[0]||'0';
+              // Video codecs — PTs not in this list are audio/non-video
               var _vCdcs=['h264','vp8','vp9','av1','h265','hevc','rtx','red','ulpfec','flexfec-03'];
               function _isVid(pt){var c=_rtpmap[pt];return !c||_vCdcs.indexOf(c)>=0;}
               function _getPT(l){return l.slice(l.indexOf(':')+1).trim().split(/\\s+/)[0];}
-              // Session-level a= attrs Chrome accepts (all others must be media-level)
-              var _sOK=['a=group:','a=ice-lite','a=fingerprint:','a=setup:','a=msid-semantic:','a=extmap-allow-mixed'];
+              // Session-level a= attrs Chrome accepts
+              var _sOK=['a=ice-lite','a=fingerprint:','a=setup:','a=msid-semantic:','a=extmap-allow-mixed'];
               function _sessOk(l){for(var _k=0;_k<_sOK.length;_k++)if(l.indexOf(_sOK[_k])===0)return true;return false;}
-              // Main pass: collect candidates, strip non-video attrs, build clean SDP
-              var _cands=[],_curMid=null,_curMIdx=-1,_filtered=[],_inMedia=false,_stripped=[];
+              // Main pass
+              var _cands=[],_curMid=null,_curMIdx=-1,_filtered=[],_inMedia=false,_inVidSec=false,_stripped=[];
               for(var _li=0;_li<_lines.length;_li++){
                 var _ln=_lines[_li];
                 if(_ln.indexOf('m=')===0){
                   _curMIdx++;_curMid=null;_inMedia=true;
-                  // Rewrite m= line: remove non-video PTs (e.g. 111/Opus included by SRS)
-                  var _mp=_ln.split(' '),_allPTs=_mp.slice(3);
-                  var _vidPTs=_allPTs.filter(function(p){return _isVid(p);});
-                  if(_vidPTs.length<_allPTs.length){
-                    var _rmPT=_allPTs.filter(function(p){return!_isVid(p);});
-                    _stripped.push('m= removed non-video PTs:'+_rmPT.join(','));
-                    _ln=_mp.slice(0,3).join(' ')+(_vidPTs.length?' '+_vidPTs.join(' '):'');
+                  _inVidSec=(_ln.indexOf('m=video')===0);
+                  if(_inVidSec){
+                    // Strip any non-video PTs mixed into the video m= line
+                    var _mp=_ln.split(' '),_allPTs=_mp.slice(3);
+                    var _vidPTs=_allPTs.filter(function(p){return _isVid(p);});
+                    if(_vidPTs.length<_allPTs.length){
+                      _stripped.push('m=video removed PTs:'+_allPTs.filter(function(p){return!_isVid(p);}).join(','));
+                      _ln=_mp.slice(0,3).join(' ')+(_vidPTs.length?' '+_vidPTs.join(' '):'');
+                    }
+                    _filtered.push(_ln);
+                  } else {
+                    _stripped.push('dropped '+_ln.split(' ')[0]+' section');
                   }
+                  continue; // m= line already handled
                 }
+                // Skip all content inside non-video m= sections
+                if(_inMedia&&!_inVidSec) continue;
                 if(_ln.indexOf('a=mid:')===0)_curMid=_ln.slice(6).trim();
                 if(_ln.indexOf('a=candidate:')===0){
                   _cands.push({candidate:_ln.slice(2),
-                               sdpMid:(_curMIdx<0?_firstMid:(_curMid||_firstMid)),
-                               sdpMLineIndex:Math.max(0,_curMIdx)});
+                               sdpMid:(_curMIdx<0||!_curMid?_firstVidMid:_curMid),
+                               sdpMLineIndex:0});
                 } else if(_ln.indexOf('a=end-of-candidates')===0||_ln.indexOf('a=ssrc:')===0){
                   _stripped.push(_ln.slice(0,48));
+                } else if(!_inMedia&&_ln.indexOf('a=group:BUNDLE')===0){
+                  // Rewrite BUNDLE to only reference video mids
+                  _filtered.push('a=group:BUNDLE '+_videoMids.join(' '));
                 } else if(!_inMedia&&_ln.indexOf('a=')===0&&!_sessOk(_ln)){
-                  _stripped.push(_ln.slice(0,48)); // session-level attr not in whitelist
-                } else if(_inMedia&&(_ln.indexOf('a=rtpmap:')===0
-                                   ||_ln.indexOf('a=fmtp:')===0
-                                   ||_ln.indexOf('a=rtcp-fb:')===0)){
-                  // Strip if the PT is not a video codec (audio PTs polluting video section)
-                  if(!_isVid(_getPT(_ln))){_stripped.push(_ln.slice(0,48));}
+                  _stripped.push(_ln.slice(0,48));
+                } else if(_inMedia&&(_ln.indexOf('a=rtpmap:')===0||_ln.indexOf('a=fmtp:')===0||_ln.indexOf('a=rtcp-fb:')===0)){
+                  if(!_isVid(_getPT(_ln))){_stripped.push(_ln.slice(0,40));}
                   else{_filtered.push(_ln);}
                 } else {
                   _filtered.push(_ln);
                 }
               }
               if(_stripped.length)console.log('[BS-video] stripped: '+_stripped.join(' | '));
-              console.log('[BS-video] '+_cands.length+' candidates, mid='+_firstMid+', SDP lines='+_filtered.length);
+              console.log('[BS-video] '+_cands.length+' candidates, vidMid='+_firstVidMid+', SDP lines='+_filtered.length);
               return pc.setRemoteDescription({type:'answer',sdp:_filtered.join('\\r\\n')})
                 .then(function(){
                   console.log('[BS-video] setRemoteDescription OK — injecting '+_cands.length+' ICE candidates');

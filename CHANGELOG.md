@@ -2,6 +2,20 @@
 
 ---
 
+### Brand Screen plugin v1.3.60 — 2026-05-01
+
+**Fix: Complete SDP rewrite — drop non-video m= sections, codec-aware PT filtering**
+
+SRS WHEP generates a deeply non-JSEP-compliant SDP answer: audio `m=` sections alongside video, audio codec attrs (`rtpmap`/`fmtp`/`rtcp-fb`/`ssrc`) mixed into the video section, ICE candidates and some codec attrs at session level (Chrome requires media level). Previous per-attribute patching kept encountering new failures (`a=candidate`, `a=ssrc`, `a=rtcp-fb`, `a=rtpmap`, `m=audio` with empty PT list).
+
+Two-pass complete rewrite:
+- **Pass 0**: build PT→codec map from all `a=rtpmap:` lines; collect `a=mid:` values from `m=video` sections → `_videoMids`
+- **Main pass**: drop non-video `m=` sections entirely (audio/application — not needed, not requested); strip all content inside dropped sections; rewrite `a=group:BUNDLE` to reference only `_videoMids`; extract `a=candidate:` lines and inject via `pc.addIceCandidate()` rather than inline; strip `a=ssrc:`/`a=end-of-candidates`; filter session-level `a=` against a whitelist; for `a=rtpmap:`/`a=fmtp:`/`a=rtcp-fb:` use the PT→codec map to strip audio PTs (Opus etc.) even when they appear inside the video `m=` section
+
+Result: Chrome's `setRemoteDescription()` and `addIceCandidate()` both succeed; WebRTC video connects peer-to-peer from SRS.
+
+---
+
 ### Brand Screen plugin v1.3.59 — 2026-05-01
 
 **Fix: SRS puts audio PT 111 (Opus) in the m=video PT list — strip all non-video codec attrs**
