@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.26",
+    "version":  "1.3.27",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -2149,15 +2149,35 @@ document.addEventListener('input',function(e){
   }
 });
 
-// Fetch vMix Caller sources for video brand picker
+// Fetch vMix Caller sources for video brand picker.
+// Two sources are merged: hub-local file (brandscreen/vmix_sources) +
+// instances reported by connected client nodes (vmixcaller/hub_instances).
+// The vmixcaller endpoint 404s gracefully when that plugin isn't installed.
 window._vmixSources=[];
-fetch('/api/brandscreen/vmix_sources',{credentials:'same-origin'})
-  .then(function(r){return r.ok?r.json():{sources:[]};}).catch(function(){return{sources:[]};})
-  .then(function(d){
-    window._vmixSources=(d.sources||[]).filter(function(s){return s.whep_url;});
-    // Re-render stations so video source pickers are populated
-    renderStations();
+Promise.all([
+  fetch('/api/brandscreen/vmix_sources',{credentials:'same-origin'})
+    .then(function(r){return r.ok?r.json():{sources:[]};}).catch(function(){return{sources:[]};})
+    .then(function(d){return(d.sources||[]).filter(function(s){return s.whep_url;});}),
+  fetch('/api/vmixcaller/hub_instances',{credentials:'same-origin'})
+    .then(function(r){return r.ok?r.json():{instances:[]};}).catch(function(){return{instances:[]};})
+    .then(function(d){
+      return (d.instances||[]).filter(function(i){return i.whep_url;})
+        .map(function(i){
+          return {id:i.id,
+                  name:(i.site&&i.name!=='Default'?i.name+' ('+i.site+')':i.name+(i.site?' ('+i.site+')':'')),
+                  bridge_url:i.bridge_url, whep_url:i.whep_url};
+        });
+    })
+]).then(function(results){
+  var local=results[0], remote=results[1];
+  // Merge: prefer remote (client-reported) entries; dedupe by whep_url
+  var seen={}, merged=[];
+  local.concat(remote).forEach(function(s){
+    if(!seen[s.whep_url]){seen[s.whep_url]=true;merged.push(s);}
   });
+  window._vmixSources=merged;
+  renderStations();
+});
 
 // Fetch Zetta stations from status_full (same source as studioboard)
 fetch('/api/zetta/status_full',{credentials:'same-origin'})

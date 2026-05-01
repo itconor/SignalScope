@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.7.7",
+    "version": "1.7.8",
 }
 
 import os
@@ -1250,12 +1250,21 @@ def _start_client_thread(monitor, hub_url: str):
                 last_full_report = now
                 ok_xml, xml_text = _vmix_xml(cfg)
                 _srs_st = _srs_status()
+                # Include instance list (id/name/bridge_url only — no vmix
+                # credentials) so the hub can expose them to other plugins
+                # (e.g. Brand Screen video source picker).
+                _inst_summary = [
+                    {"id": i.get("id", ""), "name": i.get("name", "Default"),
+                     "bridge_url": i.get("bridge_url", "")}
+                    for i in (cfg.get("instances") or [])
+                ]
                 report: dict = {
                     "ts":          now,
                     "ok":          ok_xml,
                     "vmix_ip":     cfg.get("vmix_ip",  "127.0.0.1"),
                     "vmix_port":   cfg.get("vmix_port", 8088),
                     "relay_active": _relay_event.is_set(),
+                    "instances":   _inst_summary,
                     "srs": {
                         "docker_ok":   _srs_st["docker_ok"],
                         "running":     _srs_st["running"],
@@ -4587,6 +4596,53 @@ def register(app, ctx):
             status = dict(_site_status.get(target_site, {}))
         status.setdefault("has_data", bool(status))
         return jsonify(status)
+
+    # ── Hub: all instances reported by connected clients ─────────────────────
+    # Returns {instances: [{site, id, name, bridge_url, whep_url}]} aggregated
+    # from every approved site that has reported since startup.  Used by the
+    # Brand Screen video source picker so it can see client-configured bridges.
+    @app.get("/api/vmixcaller/hub_instances")
+    @login_required
+    def vmixcaller_hub_instances():
+        from urllib.parse import urlparse
+        def _to_whep(bridge_url):
+            if not bridge_url:
+                return ""
+            if bridge_url.startswith("webrtc://"):
+                rest  = bridge_url[len("webrtc://"):]
+                parts = rest.split("/", 2)
+                host   = parts[0] if parts else ""
+                app_   = parts[1] if len(parts) > 1 else "live"
+                stream = parts[2] if len(parts) > 2 else "caller"
+                if host:
+                    return f"http://{host}:1985/rtc/v1/whep/?app={app_}&stream={stream}"
+            return ""
+
+        out = []
+        with _state_lock:
+            snapshot = dict(_site_status)
+        approved_sites = set()
+        try:
+            with hub_server._lock:
+                approved_sites = {
+                    s for s, d in (hub_server._sites or {}).items()
+                    if d.get("_approved")
+                }
+        except Exception:
+            pass
+        for site, data in snapshot.items():
+            if site not in approved_sites:
+                continue
+            for inst in (data.get("instances") or []):
+                burl = (inst.get("bridge_url") or "").strip()
+                out.append({
+                    "site":       site,
+                    "id":         inst.get("id", ""),
+                    "name":       inst.get("name", "Default"),
+                    "bridge_url": burl,
+                    "whep_url":   _to_whep(burl),
+                })
+        return jsonify({"instances": out})
 
     # ── Client: local vMix test ───────────────────────────────────────────────
     @app.get("/api/vmixcaller/test_local")

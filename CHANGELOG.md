@@ -2,6 +2,27 @@
 
 ---
 
+### vMix Caller plugin v1.7.8 — 2026-05-01
+
+**Report instances to hub for cross-plugin use**
+
+- The client's 12-second status report now includes a summary of all configured vMix instances (`id`, `name`, `bridge_url` only — no vMix credentials or sensitive data)
+- New `GET /api/vmixcaller/hub_instances` endpoint on the hub aggregates instances reported by all approved connected client sites and returns them with computed WHEP URLs
+- Used by the Brand Screen video source picker so bridge URLs configured on client nodes are visible from the hub admin page without manual re-entry
+
+---
+
+### Brand Screen plugin v1.3.27 — 2026-05-01
+
+**Video source picker syncs from client-side vMix Caller config**
+
+- Brand Screen admin page now fetches vMix sources from both the hub-local file (`/api/brandscreen/vmix_sources`) and all connected client nodes (`/api/vmixcaller/hub_instances`)
+- Sources are merged and deduplicated by WHEP URL — client-reported instances show site name in parentheses (e.g. "Default (Studio A)")
+- If vMix Caller plugin isn't installed the second fetch returns 404 and is silently ignored
+- Sources update on page load without any manual re-entry on the hub
+
+---
+
 ### Brand Screen plugin v1.3.26 — 2026-05-01
 
 **Video brand screen — WebRTC/WHEP live video via vMix Caller bridge**
