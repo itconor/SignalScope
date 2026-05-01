@@ -2,6 +2,16 @@
 
 ---
 
+### Brand Screen plugin v1.3.68 — 2026-05-01
+
+**Fix: DTLS/SRTP key mismatch causing silent video discard (WebRTC minimal-fix approach)**
+
+Root cause identified via `getStats()`: ICE pair showed `bytesRx=1.2 MB` (Chrome was receiving SRTP packets from SRS) but the `inbound-rtp` stats object was absent entirely — meaning Chrome's SRTP decryption was failing silently due to MAC authentication failure. The synthetic-answer approach (v1.3.64) used Chrome's own offer SDP as the answer template, substituting only SRS's ICE/DTLS credentials. This caused Chrome to derive SRTP keys from a different DTLS handshake context than SRS expected, producing a mismatch.
+
+Fix: use SRS's raw answer with the single change Chrome requires — `profile-level-id=42e01f → 42001f` (Chrome rejects `42e01f` in remote answers but accepts `42001f`; Chrome bug with asymmetric SDP validation). All ICE/DTLS/fingerprint/setup lines come from SRS unchanged, so SRTP keys match. `a=candidate:` lines are extracted from the raw SDP and added via `addIceCandidate()`.
+
+---
+
 ### Brand Screen plugin v1.3.67 — 2026-05-01
 
 **Diagnostic: ICE candidate pair + local/remote address logging in getStats**

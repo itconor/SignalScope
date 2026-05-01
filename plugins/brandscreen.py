@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.67",
+    "version":  "1.3.68",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3372,75 +3372,35 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
           })
           .then(function(a){
             if(a.answer){
-              // SYNTHETIC ANSWER APPROACH:
-              // Chrome rejects profile-level-id=42e01f in remote answers even though it puts the
-              // same value in its own offers. Root cause: Chrome's answer-validation path is stricter
-              // than its offer-parsing path. Fix: build the answer using Chrome's OWN offer SDP as
-              // the codec template (Chrome cannot reject its own lines), then substitute SRS's ICE/
-              // DTLS credentials and flip the direction. Final pass forces 42e01f→42001f as defence.
-              //
-              // Step 1: Extract ICE/DTLS credentials and ICE candidates from SRS's raw answer
-              var _aL=a.answer.replace(/\\r?\\n/g,'\\r\\n').split('\\r\\n');
-              var _sU='',_sP='',_sFP='',_sST='a=setup:passive',_cands=[];
-              var _aVid=false;
-              for(var _ai=0;_ai<_aL.length;_ai++){
-                var _al=_aL[_ai];
-                if(_al.indexOf('m=')===0){ _aVid=(_al.indexOf('m=video')===0); }
-                // Prefer media-level credentials; fall back to session-level
-                if(_al.indexOf('a=ice-ufrag:')===0&&(_aVid||!_sU)){ _sU=_al; }
-                if(_al.indexOf('a=ice-pwd:')===0&&(_aVid||!_sP)){ _sP=_al; }
-                if(_al.indexOf('a=fingerprint:')===0&&(_aVid||!_sFP)){ _sFP=_al; }
-                if(_al.indexOf('a=setup:')===0&&_aVid){ _sST=_al; }
-                if(_al.indexOf('a=candidate:')===0){
-                  _cands.push({candidate:_al.slice(2),sdpMid:'0',sdpMLineIndex:0});
-                }
-              }
-              console.log('[BS-video] SRS creds ok — ufrag='+(_sU?'yes':'NO')+
-                ' fp='+(_sFP?'yes':'NO')+' cands='+_cands.length);
-              // Step 2: Build synthetic answer from Chrome's own offer SDP
-              // Session section: keep structural lines + a=ice-lite (SRS is ICE-lite passive agent)
-              // Video section:   keep Chrome's codec lines; substitute SRS ICE/DTLS credentials
-              var _oL=(pc.localDescription.sdp||'').replace(/\\r?\\n/g,'\\r\\n').split('\\r\\n');
-              var _syn=[],_oVid=false,_gotT=false;
-              for(var _oi=0;_oi<_oL.length;_oi++){
-                var _ol=_oL[_oi];
-                if(_ol.indexOf('m=')===0){
-                  if(_ol.indexOf('m=video')===0){ _oVid=true; _syn.push(_ol); }
-                  else { _oVid=false; } // skip non-video sections (offer is video-only)
+              // MINIMAL-FIX APPROACH:
+              // The synthetic answer (Chrome's codec template + SRS ICE creds) caused a DTLS/SRTP
+              // key mismatch: Chrome received 1.2 MB from SRS at the ICE level but SRTP MAC
+              // verification failed (0 inbound-rtp packets). The vmixcaller direct test uses SRS's
+              // raw answer and works. Fix: use SRS's raw answer with the ONE change Chrome requires:
+              //   profile-level-id=42e01f → 42001f  (Chrome rejects 42e01f in remote answers but
+              //   accepts 42001f; confirmed working in synthetic approach test)
+              // All ICE/DTLS/fingerprint/setup come from SRS's answer unchanged, so SRTP keys match.
+              // Candidates are extracted from the answer and added via addIceCandidate (cleaner ICE).
+              var _raw=a.answer.replace(/\\r?\\n/g,'\\r\\n');
+              // Fix the ONE value Chrome rejects in answers
+              _raw=_raw.replace(/profile-level-id=42e01f/gi,'profile-level-id=42001f');
+              var _lines=_raw.split('\\r\\n');
+              var _cands=[],_filtered=[],_curMid=null,_mIdx=-1;
+              for(var _i=0;_i<_lines.length;_i++){
+                var _l=_lines[_i];
+                if(_l.indexOf('m=')===0){ _mIdx++; _curMid=null; }
+                if(_l.indexOf('a=mid:')===0){ _curMid=_l.slice(6).trim(); }
+                // Extract candidates (at session or media level) — add via addIceCandidate
+                if(_l.indexOf('a=candidate:')===0){
+                  _cands.push({candidate:_l.slice(2),
+                    sdpMid:(_curMid||'0'),sdpMLineIndex:Math.max(0,_mIdx)});
                   continue;
                 }
-                if(!_oVid){
-                  // Session section: keep v=/o=/s=/t=, add a=ice-lite after t=, keep BUNDLE/msid
-                  if(_ol.match(/^[vost]=/)){
-                    _syn.push(_ol);
-                    if(_ol.indexOf('t=')===0&&!_gotT){ _gotT=true; _syn.push('a=ice-lite'); }
-                  } else if(_ol.indexOf('a=group:BUNDLE')===0){
-                    _syn.push('a=group:BUNDLE 0');
-                  } else if(_ol.indexOf('a=msid-semantic:')===0||
-                             _ol.indexOf('a=extmap-allow-mixed')===0){
-                    _syn.push(_ol);
-                  }
-                  // Drop all other session-level lines (browser-specific offer attrs)
-                } else {
-                  // Video section: Chrome's codec lines with SRS credentials substituted
-                  if(_ol.indexOf('a=recvonly')===0){ _syn.push('a=sendonly'); }
-                  else if(_ol.indexOf('a=ice-ufrag:')===0){ _syn.push(_sU||_ol); }
-                  else if(_ol.indexOf('a=ice-pwd:')===0){ _syn.push(_sP||_ol); }
-                  else if(_ol.indexOf('a=fingerprint:')===0){ _syn.push(_sFP||_ol); }
-                  else if(_ol.indexOf('a=setup:')===0){ _syn.push(_sST); }
-                  else if(_ol.indexOf('a=candidate:')===0||
-                          _ol.indexOf('a=end-of-candidates')===0){} // injected via addIceCandidate
-                  else { _syn.push(_ol); }
-                }
+                _filtered.push(_l);
               }
-              // Step 3: Force 42e01f→42001f (Chrome rejects 42e01f in remote answers)
-              _syn=_syn.map(function(_sl_){
-                return _sl_.indexOf('profile-level-id=42e01f')>=0
-                  ? _sl_.replace(/profile-level-id=42e01f/g,'profile-level-id=42001f') : _sl_;
-              });
-              console.log('[BS-video] synth answer: '+_syn.length+' lines, '+_cands.length+' cands');
-              console.log('[BS-video] SYNTH SDP:\\n'+_syn.join('\\n'));
-              return pc.setRemoteDescription({type:'answer',sdp:_syn.join('\\r\\n')})
+              console.log('[BS-video] SRS answer (minimal fix): '+_filtered.length+' lines, '+_cands.length+' cands');
+              console.log('[BS-video] SRS SDP:\\n'+_filtered.join('\\n'));
+              return pc.setRemoteDescription({type:'answer',sdp:_filtered.join('\\r\\n')})
                 .then(function(){
                   console.log('[BS-video] setRemoteDescription OK — injecting '+_cands.length+' ICE cands');
                   _cands.forEach(function(e){
