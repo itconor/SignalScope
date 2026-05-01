@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.62",
+    "version":  "1.3.63",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3245,9 +3245,8 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
     _bvCleanup();
     console.log('[BS-video] _bvConnect() starting');
     var pc=new RTCPeerConnection({iceServers:[]});
-    // Receive video + audio only — we are the egress consumer
+    // Video only — brand screen is a display, not a conference endpoint
     pc.addTransceiver('video',{direction:'recvonly'});
-    pc.addTransceiver('audio',{direction:'recvonly'});
 
     pc.ontrack=function(evt){
       console.log('[BS-video] ontrack fired, streams='+evt.streams.length);
@@ -3371,12 +3370,25 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
                     }
                     _filtered.push(_ln);
                   } else {
-                    _stripped.push('dropped '+_ln.split(' ')[0]+' section');
+                    // Non-video section: emit a REJECTED m= (port=0) so JSEP m= count matches.
+                    // JSEP requires answer to have the same m= sections as the offer in the same
+                    // order; dropping entirely leaves a count mismatch → Chrome fails to validate.
+                    var _mrej=_ln.split(' ');
+                    _filtered.push(_mrej[0]+' 0 '+(_mrej[2]||'UDP/TLS/RTP/SAVPF')+' 0');
+                    _stripped.push('rejected '+_mrej[0]+' (port=0)');
                   }
                   continue; // m= line already handled
                 }
-                // Skip all content inside non-video m= sections
-                if(_inMedia&&!_inVidSec) continue;
+                // Inside non-video m= section: keep only c= and a=mid: for rejected section validity
+                if(_inMedia&&!_inVidSec){
+                  if(_ln.indexOf('c=')===0){ _filtered.push(_ln); }
+                  else if(_ln.indexOf('a=mid:')===0){
+                    _curMid=_ln.slice(6).trim();
+                    _filtered.push(_ln);
+                    _filtered.push('a=inactive');
+                  }
+                  continue;
+                }
                 if(_ln.indexOf('a=mid:')===0)_curMid=_ln.slice(6).trim();
                 if(_ln.indexOf('a=candidate:')===0){
                   _cands.push({candidate:_ln.slice(2),

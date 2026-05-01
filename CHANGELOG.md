@@ -2,6 +2,18 @@
 
 ---
 
+### Brand Screen plugin v1.3.63 — 2026-05-01
+
+**Fix: JSEP m= section count mismatch — remove audio transceiver, reject non-video sections**
+
+Root cause of `a=fmtp:109 Invalid SDP line`: Chrome's offer had TWO m= sections (video + audio, from `pc.addTransceiver('audio',{direction:'recvonly'})`). SRS answers with only m=video. Chrome's JSEP validator requires the answer to have the same number of m= sections in the same order as the offer. With the audio section dropped from the answer, Chrome fell off the end of the answer SDP while expecting another m= section and attributed the parse failure to the last `a=` line seen: `a=fmtp:109`.
+
+Two-part fix:
+1. Remove `pc.addTransceiver('audio',{direction:'recvonly'})` — brand screen is display-only; audio is unused. Chrome's offer now has only m=video → answer only needs m=video → no count mismatch.
+2. Non-video m= sections in the answer are now emitted as REJECTED (port=0) with `a=mid:` and `a=inactive` instead of being dropped entirely, so JSEP m= counts always match even if the offer ever includes audio again.
+
+---
+
 ### Brand Screen plugin v1.3.62 — 2026-05-01
 
 **Fix: answer fmtp synced to Chrome's offered fmtp to prevent profile-level-id mismatch**
