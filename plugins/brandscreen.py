@@ -15,13 +15,14 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.25",
+    "version":  "1.3.26",
 }
 
-_BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
-_CFG_PATH    = os.path.join(_BASE_DIR, "brandscreen_cfg.json")
-_LOGO_DIR    = os.path.join(_BASE_DIR, "brandscreen_logos")
-_SB_CFG_PATH = os.path.join(_BASE_DIR, "studioboard_cfg.json")   # for mic-live polling
+_BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
+_CFG_PATH      = os.path.join(_BASE_DIR, "brandscreen_cfg.json")
+_LOGO_DIR      = os.path.join(_BASE_DIR, "brandscreen_logos")
+_SB_CFG_PATH   = os.path.join(_BASE_DIR, "studioboard_cfg.json")   # for mic-live polling
+_VMIX_CFG_PATH = os.path.join(_BASE_DIR, "vmixcaller_config.json")  # for video source picker
 _LOCK        = threading.Lock()
 _NOTIFY      = {}              # studio_id → list[queue.Queue]
 _NLOCK       = threading.Lock()
@@ -54,6 +55,55 @@ _cs_result: dict = {}
 _cs_result_lock = threading.Lock()
 
 os.makedirs(_LOGO_DIR, exist_ok=True)
+
+# ────────────────────────────────────── vMix / WHEP URL helpers ──────────────
+
+def _to_whep_url(bridge_url):
+    """Convert a vMix Caller bridge_url to an SRS WHEP endpoint URL.
+
+    webrtc://HOST/APP/STREAM → http://HOST:1985/rtc/v1/whep/?app=APP&stream=STREAM
+
+    Port 1985 is the SRS HTTP API port where WHEP lives by default.
+    Returns None for non-WebRTC URLs (e.g. HLS http:// URLs).
+    """
+    if not bridge_url:
+        return None
+    if bridge_url.startswith("webrtc://"):
+        rest   = bridge_url[len("webrtc://"):]
+        parts  = rest.split("/", 2)
+        host   = parts[0] if parts else ""
+        app    = parts[1] if len(parts) > 1 else "live"
+        stream = parts[2] if len(parts) > 2 else "caller"
+        if host:
+            return f"http://{host}:1985/rtc/v1/whep/?app={app}&stream={stream}"
+    return None
+
+
+def _vmix_sources():
+    """Return vMix Caller instance bridge sources from vmixcaller_config.json."""
+    try:
+        with open(_VMIX_CFG_PATH) as f:
+            cfg = json.load(f)
+    except Exception:
+        return []
+    instances = cfg.get("instances") or []
+    if not instances:
+        # Legacy flat config
+        raw = (cfg.get("bridge_url") or "").strip()
+        if raw:
+            instances = [{"id": "default", "name": "Default", "bridge_url": raw}]
+    sources = []
+    for inst in instances:
+        raw  = (inst.get("bridge_url") or "").strip()
+        whep = _to_whep_url(raw)
+        sources.append({
+            "id":        inst.get("id", "default"),
+            "name":      inst.get("name", "Default"),
+            "bridge_url": raw,
+            "whep_url":  whep or "",
+        })
+    return sources
+
 
 # ─────────────────────────────────────────────── config helpers ───────────────
 
@@ -107,6 +157,7 @@ def _new_station():
         "full_screen_logo":   False, # display logo only — no backgrounds, animations, clock, NP
         "cueserver_cmd":      "",    # CueServer CGI command string (e.g. "Cue 5 Go")
         "cs_brightness":      100,   # LED brightness for this brand (0–100, default 100)
+        "video_url":          "",    # WHEP endpoint URL for video brand (bg_style="video")
     }
 
 def _new_studio():
@@ -1434,7 +1485,7 @@ function _esc(s){var d=document.createElement('div');d.appendChild(document.crea
 function _v(id){var el=document.getElementById(id);return el?(el.type==='checkbox'?el.checked:el.value):null;}
 function _stById(id){return _stations.find(function(s){return s.id===id;})||null;}
 function _sdById(id){return _studios.find(function(s){return s.id===id;})||null;}
-var _BG_L={particles:'Particles',aurora:'Aurora',waves:'Waves',minimal:'Minimal',beams:'Beams',grid:'Grid',burst:'Burst',haze:'Haze'};
+var _BG_L={particles:'Particles',aurora:'Aurora',waves:'Waves',minimal:'Minimal',beams:'Beams',grid:'Grid',burst:'Burst',haze:'Haze',video:'Video'};
 var _AN_L={orbit:'Orbit rings',pulse:'Pulse',glow:'Glow',float:'Float',spin:'Spin',glitch:'Glitch',bounce:'Bounce',none:'Static'};
 var _NP_L={zetta:'Zetta',json_api:'JSON API',manual:'Manual',none:'None'};
 
@@ -1601,17 +1652,34 @@ function _stationForm(s){
     +'<hr class="sep">'
     +'<div class="slabel">Animation</div>'
     +'<div class="grid2">'
-    +'<div class="field"><label>Background</label><select id="f-bg-'+s.id+'">'
-    +'<option value="particles"'+(s.bg_style==='particles'?' selected':'')+'>✦ Particles</option>'
-    +'<option value="aurora"'+(s.bg_style==='aurora'?' selected':'')+'>◎ Aurora</option>'
-    +'<option value="waves"'+(s.bg_style==='waves'?' selected':'')+'>⌇ Waves</option>'
-    +'<option value="beams"'+(s.bg_style==='beams'?' selected':'')+'>🔦 Beams</option>'
-    +'<option value="grid"'+(s.bg_style==='grid'?' selected':'')+'>⊞ Grid</option>'
-    +'<option value="burst"'+(s.bg_style==='burst'?' selected':'')+'>✸ Burst</option>'
-    +'<option value="haze"'+(s.bg_style==='haze'?' selected':'')+'>🌫 Haze</option>'
-    +'<option value="minimal"'+(s.bg_style==='minimal'?' selected':'')+'>▪ Minimal</option>'
-    +'</select></div>'
-    +'<div class="field"><label>Logo Animation</label><select id="f-anim-'+s.id+'">'
+    +(function(){
+      var isVid=(s.bg_style==='video');
+      var vmixSources=window._vmixSources||[];
+      var vmixOpts='<option value="">— none —</option>'
+        +vmixSources.map(function(src){
+          var sel=(s.video_url&&s.video_url===src.whep_url)?' selected':'';
+          return '<option value="'+_esc(src.whep_url)+'"'+sel+'>'+_esc(src.name)+(src.whep_url?'':' (no bridge URL)')+'</option>';
+        }).join('');
+      return '<div class="field"><label>Background</label><select id="f-bg-'+s.id+'" data-bg-sel="'+s.id+'">'
+        +'<option value="particles"'+(s.bg_style==='particles'?' selected':'')+'>✦ Particles</option>'
+        +'<option value="aurora"'+(s.bg_style==='aurora'?' selected':'')+'>◎ Aurora</option>'
+        +'<option value="waves"'+(s.bg_style==='waves'?' selected':'')+'>⌇ Waves</option>'
+        +'<option value="beams"'+(s.bg_style==='beams'?' selected':'')+'>🔦 Beams</option>'
+        +'<option value="grid"'+(s.bg_style==='grid'?' selected':'')+'>⊞ Grid</option>'
+        +'<option value="burst"'+(s.bg_style==='burst'?' selected':'')+'>✸ Burst</option>'
+        +'<option value="haze"'+(s.bg_style==='haze'?' selected':'')+'>🌫 Haze</option>'
+        +'<option value="minimal"'+(s.bg_style==='minimal'?' selected':'')+'>▪ Minimal</option>'
+        +'<option value="video"'+(isVid?' selected':'')+'>🎥 Live Video</option>'
+        +'</select></div>'
+        +'<div class="field" id="f-videosrc-wrap-'+s.id+'" style="'+(isVid?'':'display:none')+'">'
+        +'<label>vMix Caller Source</label>'
+        +'<select id="f-videosrc-'+s.id+'">'+vmixOpts+'</select>'
+        +(vmixSources.length?'<p class="hint" style="margin-top:4px">Select a vMix Caller instance. The brand screen will connect directly to the SRS bridge on the same LAN via WebRTC (WHEP). Cannot be previewed from the hub.</p>'
+          :'<p class="hint" style="margin-top:4px">No vMix Caller instances found — check the vMix Caller plugin is installed and has at least one instance configured with a bridge URL.</p>')
+        +'</div>';
+    })()
+    +'<div class="field" id="f-logoani-wrap-'+s.id+'" style="'+(s.bg_style==='video'?'display:none':'')+'">'
+    +'<label>Logo Animation</label><select id="f-anim-'+s.id+'">'
     +'<option value="orbit"'+(s.logo_anim==='orbit'?' selected':'')+'>⊙ Orbit rings</option>'
     +'<option value="pulse"'+(s.logo_anim==='pulse'?' selected':'')+'>◉ Pulse</option>'
     +'<option value="glow"'+(s.logo_anim==='glow'?' selected':'')+'>✦ Glow</option>'
@@ -1631,6 +1699,7 @@ function _stationForm(s){
     +'<label for="f-fsl-'+s.id+'"><strong>Full-screen logo mode</strong> — show logo only, no background effects, animations, clock, or now-playing</label>'
     +'</div>'
     +'<p class="hint" style="margin-bottom:4px">Upload a logo and tick this for a clean static brand image. Takeovers still work on top.</p>'
+    +'<div id="f-audlev-wrap-'+s.id+'" style="'+(s.bg_style==='video'?'display:none':'')+'">'
     +'<hr class="sep">'
     +'<div class="slabel">Audio Level <span style="font-weight:400;font-size:10px;text-transform:none;letter-spacing:0">— drives orbit opacity, spin speed, bounce, pulse rate, glow, beams, burst, grid &amp; particles</span></div>'
     +'<div class="field"><label>Input Stream</label>'
@@ -1639,6 +1708,7 @@ function _stationForm(s){
     +streamOpts
     +'</select>'
     +(streamOpts?'':'<p class="hint">No streams detected from hub — check that sites are connected and sending heartbeats.</p>')
+    +'</div>'
     +'</div>'
     +'<hr class="sep">'
     +'<div class="slabel">Logo</div>'
@@ -1769,6 +1839,7 @@ function _saveSt(sid, _onDone){
     np_api_artist_path:_v('f-npapath-'+sid)||'', np_manual:_v('f-npman-'+sid)||'',
     message:_v('f-msg-'+sid)||'',
     cs_brightness:parseInt(_v('f-csBri-'+sid)||'100',10),
+    video_url:_v('f-videosrc-'+sid)||'',
   };
   _post('/api/brandscreen/station/'+sid, data).then(function(r){return r.json();}).then(function(d){
     if(d.error){_msg(d.error,false);return;}
@@ -2040,6 +2111,16 @@ function _checkOnboard(){
 })();
 document.addEventListener('change',function(e){
   if(e.target.dataset.npSel) _npSrcChanged(e.target.dataset.npSel);
+  // bg_style select → show/hide video source picker vs animation/audio sections
+  if(e.target.dataset.bgSel){
+    var _bSid=e.target.dataset.bgSel, _isVid=(e.target.value==='video');
+    var _vsWrap=document.getElementById('f-videosrc-wrap-'+_bSid);
+    var _laWrap=document.getElementById('f-logoani-wrap-'+_bSid);
+    var _alWrap=document.getElementById('f-audlev-wrap-'+_bSid);
+    if(_vsWrap) _vsWrap.style.display=_isVid?'':'none';
+    if(_laWrap) _laWrap.style.display=_isVid?'none':'';
+    if(_alWrap) _alWrap.style.display=_isVid?'none':'';
+  }
   // Sync LED swatch to LED colour picker (f-accent-*)
   if(e.target.id&&e.target.id.startsWith('f-accent-')){
     var _stId=e.target.id.replace('f-accent-','');
@@ -2067,6 +2148,16 @@ document.addEventListener('input',function(e){
     // Also update the CueServer colour swatch preview opacity to hint at brightness
   }
 });
+
+// Fetch vMix Caller sources for video brand picker
+window._vmixSources=[];
+fetch('/api/brandscreen/vmix_sources',{credentials:'same-origin'})
+  .then(function(r){return r.ok?r.json():{sources:[]};}).catch(function(){return{sources:[]};})
+  .then(function(d){
+    window._vmixSources=(d.sources||[]).filter(function(s){return s.whep_url;});
+    // Re-render stations so video source pickers are populated
+    renderStations();
+  });
 
 // Fetch Zetta stations from status_full (same source as studioboard)
 fetch('/api/zetta/status_full',{credentials:'same-origin'})
@@ -2620,6 +2711,11 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
   <div class="haze-blob hz2"></div>
   <div class="haze-blob hz3"></div>
 </div>
+{% elif bg_style == 'video' %}
+{# Video brand: full-screen WebRTC player. Brand colour background shows until video connects. #}
+<video id="bv-el" autoplay muted playsinline
+  style="position:fixed;inset:0;width:100%;height:100%;object-fit:cover;z-index:0;background:#000;display:none"
+  aria-hidden="true"></video>
 {% else %}
 <div class="bg-minimal"></div>
 {% endif %}
@@ -2683,6 +2779,7 @@ var _showClock  = {{show_clock|lower}};
 var _showOair   = {{show_on_air|lower}};
 var _showNP     = {{show_now_playing|lower}};
 var _levelKey   = '{{level_key|e}}';   // "site|stream" or ""
+var _videoUrl   = '{{video_url|e}}';   // WHEP endpoint URL for video brand (empty = not video)
 // Full-screen logo mode — when true, all backgrounds/animations/NP are suppressed.
 // Takeovers still work.  SSE reload still works.
 var _fsLogo     = {{full_screen_logo|lower}};
@@ -2739,6 +2836,80 @@ if(_bgStyle==='particles' && _hasStation && !_fsLogo){
   _drawPts();
 }
 
+// ── WebRTC WHEP video player ─────────────────────────────────────────────────
+// Used when bg_style === 'video'. Connects directly to the SRS bridge on the
+// same LAN via WHEP (WebRTC-HTTP Egress Protocol). No hub relay — sub-second
+// latency. Falls back gracefully to brand colour background if unreachable.
+if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
+  var _bvEl      = document.getElementById('bv-el');
+  var _bvPc      = null;
+  var _bvRetryT  = null;
+  var _bvFailed  = false;
+
+  function _bvCleanup(){
+    if(_bvRetryT){ clearTimeout(_bvRetryT); _bvRetryT=null; }
+    if(_bvPc){ try{_bvPc.close();}catch(e){} _bvPc=null; }
+  }
+
+  function _bvConnect(){
+    _bvCleanup();
+    var pc=new RTCPeerConnection({iceServers:[]});
+    // Receive video + audio only — we are the egress consumer
+    pc.addTransceiver('video',{direction:'recvonly'});
+    pc.addTransceiver('audio',{direction:'recvonly'});
+
+    pc.ontrack=function(evt){
+      if(_bvEl && evt.streams && evt.streams[0]){
+        _bvEl.srcObject=evt.streams[0];
+        _bvEl.style.display='block';
+        _bvFailed=false;
+      }
+    };
+
+    pc.onconnectionstatechange=function(){
+      if(pc.connectionState==='failed'||pc.connectionState==='disconnected'){
+        _bvCleanup();
+        _bvRetryT=setTimeout(_bvConnect,5000);
+      }
+    };
+
+    pc.createOffer()
+      .then(function(offer){ return pc.setLocalDescription(offer); })
+      .then(function(){
+        // Wait up to 2 s for ICE gathering before sending SDP
+        return new Promise(function(resolve){
+          if(pc.iceGatheringState==='complete'){resolve();return;}
+          var _done=false;
+          function _chk(){if(pc.iceGatheringState==='complete'&&!_done){_done=true;resolve();}}
+          pc.addEventListener('icegatheringstatechange',_chk);
+          setTimeout(function(){if(!_done){_done=true;resolve();}},2000);
+        });
+      })
+      .then(function(){
+        return fetch(_videoUrl,{
+          method:'POST',
+          headers:{'Content-Type':'application/sdp'},
+          body:pc.localDescription.sdp
+        });
+      })
+      .then(function(resp){
+        if(!resp.ok) throw new Error('WHEP HTTP '+resp.status);
+        return resp.text();
+      })
+      .then(function(sdp){
+        _bvPc=pc;
+        return pc.setRemoteDescription({type:'answer',sdp:sdp});
+      })
+      .catch(function(err){
+        console.warn('[BrandScreen] WHEP connect failed:',err);
+        _bvFailed=true;
+        _bvRetryT=setTimeout(_bvConnect,5000);
+      });
+  }
+
+  _bvConnect();
+}
+
 // ── Audio-level reactive animations ─────────────────────────────────────────
 // _rawLev  — latest poll target (updated every 150 ms by _pollLevel)
 // _lev     — slow ambient EMA (driven by RAF loop at 60 fps toward _rawLev)
@@ -2778,6 +2949,8 @@ var _bgEl     = _bgStyle!=='aurora' ? (
 // _applyEffects: called at 60 fps by the RAF loop; reads _lev / _levSnap
 // which are already smoothed — no EMA computation here.
 function _applyEffects(){
+  // Video brand: no animation effects — the video IS the background
+  if(_bgStyle==='video') return;
 
   // ── Outer bloom: large soft halo — grows from tiny to screen-filling ───────
   var bScale = 0.12 + _levSnap * 3.1;
@@ -3148,6 +3321,7 @@ def register(app, ctx):
             has_logo=p is not None,
             level_key=lk,
             full_screen_logo=bool((st or {}).get("full_screen_logo", False)),
+            video_url=(st or {}).get("video_url", ""),
             kiosk_token=kiosk_token,
         )
 
@@ -3537,7 +3711,7 @@ def register(app, ctx):
             "bg_style", "logo_anim", "show_clock", "show_on_air", "show_now_playing",
             "level_key", "np_source", "np_zetta_key", "np_api_url",
             "np_api_title_path", "np_api_artist_path", "np_manual", "message",
-            "full_screen_logo", "cueserver_cmd", "cs_brightness",
+            "full_screen_logo", "cueserver_cmd", "cs_brightness", "video_url",
         ]
         for k in allowed:
             if k in data:
@@ -3713,6 +3887,12 @@ def register(app, ctx):
         except Exception:
             sites = []
         return jsonify({"sites": sites})
+
+    @app.get("/api/brandscreen/vmix_sources")
+    @login_required
+    def bs_vmix_sources():
+        """Return vMix Caller instances with their WHEP URLs for the video brand picker."""
+        return jsonify({"sources": _vmix_sources()})
 
     # ── CueServer: hub poll endpoint (called by client poller thread) ─────────
     @app.get("/api/brandscreen/cueserver_cmd")

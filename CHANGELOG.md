@@ -2,6 +2,23 @@
 
 ---
 
+### Brand Screen plugin v1.3.26 — 2026-05-01
+
+**Video brand screen — WebRTC/WHEP live video via vMix Caller bridge**
+
+Adds a new `bg_style = "video"` that displays a full-screen live video feed directly on the brand screen TV from the vMix Caller SRS bridge, with no hub relay and sub-second WebRTC latency.
+
+- New **🎥 Live Video** background style option in the brand form
+- When selected, the Logo Animation and Audio Level sections are hidden (not applicable to video); a **vMix Caller Source** picker appears instead
+- Sources are read from the vMix Caller plugin config (`plugins/vmixcaller_config.json`) — instances with a `webrtc://` bridge URL are listed automatically
+- The brand screen TV connects directly to the SRS bridge via **WHEP** (`POST /rtc/v1/whep/`) — browser-to-SRS over UDP on the LAN, no hub involved in the video path
+- Auto-retries every 5 s on connection failure or disconnect; no latency from hub relay
+- Falls back gracefully to brand colour background if no video URL is configured or SRS is unreachable
+- New `GET /api/brandscreen/vmix_sources` endpoint returns available WHEP sources for the picker
+- `video_url` field stored per station and passed to the screen template
+
+---
+
 ### Brand Screen plugin v1.3.25 — 2026-05-01
 
 **Accent Colour repurposed as LED Colour**
