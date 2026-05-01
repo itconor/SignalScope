@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.57",
+    "version":  "1.3.58",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3354,19 +3354,18 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
                   _cands.push({candidate:_ln.slice(2),
                                sdpMid:(_curMIdx<0?_firstMid:(_curMid||_firstMid)),
                                sdpMLineIndex:Math.max(0,_curMIdx)});
-                } else if(_ln.indexOf('a=end-of-candidates')===0||_ln.indexOf('a=ssrc:')===0){
+                } else if(_ln.indexOf('a=end-of-candidates')===0
+                        ||_ln.indexOf('a=ssrc:')===0
+                        ||_ln.indexOf('a=rtcp-fb:')===0){
+                  // Strip always: candidates handled via addIceCandidate; ssrc not
+                  // required for recvonly; rtcp-fb — SRS puts audio PT (111/Opus)
+                  // feedback lines inside the video m= section (PT 111 also appears
+                  // in the video m= line itself), so PT-validation doesn't help.
+                  // Browser uses its own offer's rtcp-fb caps; server answer doesn't
+                  // need to redeclare them.
                   _stripped.push(_ln.slice(0,48));
                 } else if(!_inMedia&&_ln.indexOf('a=')===0&&!_sessOk(_ln)){
                   _stripped.push(_ln.slice(0,48)); // session-level attr not in whitelist
-                } else if(_inMedia&&_ln.indexOf('a=rtcp-fb:')===0){
-                  // Strip a=rtcp-fb for payload types not negotiated in this m= section.
-                  // SRS includes audio PT feedback (e.g. 111/opus) in the video section.
-                  var _fbPT=_ln.slice(10).split(' ')[0];
-                  if(_mPTs.indexOf(_fbPT)<0){
-                    _stripped.push(_ln.slice(0,48));
-                  } else {
-                    _filtered.push(_ln);
-                  }
                 } else {
                   _filtered.push(_ln);
                 }

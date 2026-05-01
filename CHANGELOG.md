@@ -2,6 +2,14 @@
 
 ---
 
+### Brand Screen plugin v1.3.58 — 2026-05-01
+
+**Fix: strip all a=rtcp-fb lines — SRS puts audio PT 111 in the video m= line itself**
+
+The PT-validation approach in v1.3.57 failed because SRS includes PT 111 (Opus audio) directly in the `m=video` line's payload type list, making `_mPTs.indexOf('111')` return found → line kept → Chrome rejects it. PT validation doesn't help when the invalid PT is in the `m=` line itself. Strip all `a=rtcp-fb:` lines unconditionally. For a `recvonly` video connection the browser uses its own offer's feedback capabilities; the server answer doesn't need to redeclare them.
+
+---
+
 ### Brand Screen plugin v1.3.57 — 2026-05-01
 
 **Fix: a=rtcp-fb for non-negotiated PT inside video m= section**
