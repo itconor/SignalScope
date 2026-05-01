@@ -2,6 +2,14 @@
 
 ---
 
+### Brand Screen plugin v1.3.66 — 2026-05-01
+
+**Diagnostic: getStats() + track mute/unmute events to isolate no-video cause**
+
+WebRTC connected, vMix confirmed sending to SRS, but brand screen shows no video. Added `getStats()` poll 5 s after `connectionState=connected` to check `bytesReceived`/`framesDecoded` — distinguishes between "RTP not arriving" vs "RTP arriving but not decoded/rendered". Added `track.onmute`/`track.onunmute` handlers to detect when SRS starts/stops sending RTP.
+
+---
+
 ### Brand Screen plugin v1.3.65 — 2026-05-01
 
 **Fix: explicit `.play()` call + video element diagnostics**

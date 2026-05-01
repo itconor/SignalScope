@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.65",
+    "version":  "1.3.66",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3260,13 +3260,20 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
     pc.ontrack=function(evt){
       var _tr=evt.track;
       console.log('[BS-video] ontrack kind='+_tr.kind+' state='+_tr.readyState+
-                  ' streams='+evt.streams.length+' el='+!!_bvEl);
+                  ' muted='+_tr.muted+' streams='+evt.streams.length+' el='+!!_bvEl);
+      // Track mute events: fires when SRS starts/stops sending RTP
+      _tr.onmute=function(){ console.warn('[BS-video] track MUTED — SRS not sending RTP'); };
+      _tr.onunmute=function(){
+        console.log('[BS-video] track LIVE — SRS is sending RTP');
+        // Re-attempt play in case the element was waiting
+        if(_bvEl){ _bvEl.play().catch(function(e){}); }
+      };
       if(_bvEl && evt.streams && evt.streams[0]){
         _bvEl.srcObject=evt.streams[0];
         _bvEl.style.display='block';
         // Explicit play() — browsers may not honour autoplay without user gesture
         _bvEl.play().catch(function(e){ console.warn('[BS-video] play() rejected:',e.name,e.message); });
-        console.log('[BS-video] srcObject set, play() called');
+        console.log('[BS-video] srcObject set, play() called, track.muted='+_tr.muted);
         _bvFailed=false;
       } else {
         console.warn('[BS-video] ontrack condition failed: el='+!!_bvEl+
@@ -3275,8 +3282,24 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
     };
 
     pc.onconnectionstatechange=function(){
-      console.log('[BS-video] connectionState='+pc.connectionState);
-      if(pc.connectionState==='failed'||pc.connectionState==='disconnected'){
+      var _cs=pc.connectionState;
+      console.log('[BS-video] connectionState='+_cs);
+      if(_cs==='connected'){
+        // 5 s after connect: getStats() to check if SRS is actually sending RTP bytes
+        setTimeout(function(){
+          if(!pc||pc.connectionState!=='connected') return;
+          pc.getStats().then(function(stats){
+            stats.forEach(function(r){
+              if(r.type==='inbound-rtp'&&r.kind==='video'){
+                console.log('[BS-video] inbound-rtp: bytesRx='+r.bytesReceived+
+                  ' pktsRx='+r.packetsReceived+' pktLost='+r.packetsLost+
+                  ' framesDecoded='+r.framesDecoded+' framesDropped='+r.framesDropped);
+              }
+            });
+          }).catch(function(){});
+        }, 5000);
+      }
+      if(_cs==='failed'||_cs==='disconnected'){
         _bvCleanup();
         _bvRetryT=setTimeout(_bvConnect,5000);
       }
