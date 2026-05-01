@@ -2,6 +2,16 @@
 
 ---
 
+### Brand Screen plugin v1.3.59 — 2026-05-01
+
+**Fix: SRS puts audio PT 111 (Opus) in the m=video PT list — strip all non-video codec attrs**
+
+SRS includes audio codec payload types (111/Opus) directly in the `m=video` line, so checking `_mPTs.indexOf('111')` finds it and keeps the `a=rtpmap:111 opus/48000/2` line → Chrome rejects it. Pure PT-list validation can't distinguish video from audio when SRS mixes them in the same m= line.
+
+New approach: build a PT→codec map from all `a=rtpmap:` lines first (Pass 0). Classify each PT as video (`h264, vp8, vp9, av1, rtx, red, ulpfec, ...`) or non-video. Then: rewrite the `m=` line removing non-video PTs; strip `a=rtpmap:`, `a=fmtp:`, `a=rtcp-fb:` for non-video PTs; keep them for video PTs (restoring proper NACK/PLI feedback for H264).
+
+---
+
 ### Brand Screen plugin v1.3.58 — 2026-05-01
 
 **Fix: strip all a=rtcp-fb lines — SRS puts audio PT 111 in the video m= line itself**

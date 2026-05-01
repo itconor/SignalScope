@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.58",
+    "version":  "1.3.59",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3330,42 +3330,55 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
               // Candidates are stripped everywhere and re-added via addIceCandidate.
               var _sdp=a.answer.replace(/\\r?\\n/g,'\\r\\n');
               var _lines=_sdp.split('\\r\\n');
-              // First pass: find mid of the first m= section
-              var _firstMid='0',_inM=false;
+              // Pass 0: find firstMid + build PT→codec map from a=rtpmap lines
+              var _firstMid='0',_inM=false,_rtpmap={};
               for(var _fi=0;_fi<_lines.length;_fi++){
-                if(_lines[_fi].indexOf('m=')===0)_inM=true;
-                if(_inM&&_lines[_fi].indexOf('a=mid:')===0){_firstMid=_lines[_fi].slice(6).trim();break;}
+                var _fl=_lines[_fi];
+                if(_fl.indexOf('m=')===0)_inM=true;
+                if(_inM&&_fl.indexOf('a=mid:')===0&&_firstMid==='0'){_firstMid=_fl.slice(6).trim();}
+                if(_fl.indexOf('a=rtpmap:')===0){
+                  var _rp=_fl.slice(9).split(' ');
+                  if(_rp.length>=2)_rtpmap[_rp[0]]=_rp[1].split('/')[0].toLowerCase();
+                }
               }
+              // Video codecs — PTs mapping to anything else are audio/non-video and
+              // should be stripped from the video m= section entirely
+              var _vCdcs=['h264','vp8','vp9','av1','h265','hevc','rtx','red','ulpfec','flexfec-03'];
+              function _isVid(pt){var c=_rtpmap[pt];return !c||_vCdcs.indexOf(c)>=0;}
+              function _getPT(l){return l.slice(l.indexOf(':')+1).trim().split(/\\s+/)[0];}
               // Session-level a= attrs Chrome accepts (all others must be media-level)
               var _sOK=['a=group:','a=ice-lite','a=fingerprint:','a=setup:','a=msid-semantic:','a=extmap-allow-mixed'];
               function _sessOk(l){for(var _k=0;_k<_sOK.length;_k++)if(l.indexOf(_sOK[_k])===0)return true;return false;}
-              // Second pass: collect candidates, strip bad attrs, build clean SDP
-              var _cands=[],_curMid=null,_curMIdx=-1,_filtered=[],_inMedia=false,_stripped=[],_mPTs=[];
+              // Main pass: collect candidates, strip non-video attrs, build clean SDP
+              var _cands=[],_curMid=null,_curMIdx=-1,_filtered=[],_inMedia=false,_stripped=[];
               for(var _li=0;_li<_lines.length;_li++){
                 var _ln=_lines[_li];
                 if(_ln.indexOf('m=')===0){
                   _curMIdx++;_curMid=null;_inMedia=true;
-                  // Extract negotiated payload types from m= line
-                  // e.g. "m=video 8000 UDP/TLS/RTP/SAVPF 100 102" → ['100','102']
-                  _mPTs=_ln.split(' ').slice(3);
+                  // Rewrite m= line: remove non-video PTs (e.g. 111/Opus included by SRS)
+                  var _mp=_ln.split(' '),_allPTs=_mp.slice(3);
+                  var _vidPTs=_allPTs.filter(function(p){return _isVid(p);});
+                  if(_vidPTs.length<_allPTs.length){
+                    var _rmPT=_allPTs.filter(function(p){return!_isVid(p);});
+                    _stripped.push('m= removed non-video PTs:'+_rmPT.join(','));
+                    _ln=_mp.slice(0,3).join(' ')+(_vidPTs.length?' '+_vidPTs.join(' '):'');
+                  }
                 }
                 if(_ln.indexOf('a=mid:')===0)_curMid=_ln.slice(6).trim();
                 if(_ln.indexOf('a=candidate:')===0){
                   _cands.push({candidate:_ln.slice(2),
                                sdpMid:(_curMIdx<0?_firstMid:(_curMid||_firstMid)),
                                sdpMLineIndex:Math.max(0,_curMIdx)});
-                } else if(_ln.indexOf('a=end-of-candidates')===0
-                        ||_ln.indexOf('a=ssrc:')===0
-                        ||_ln.indexOf('a=rtcp-fb:')===0){
-                  // Strip always: candidates handled via addIceCandidate; ssrc not
-                  // required for recvonly; rtcp-fb — SRS puts audio PT (111/Opus)
-                  // feedback lines inside the video m= section (PT 111 also appears
-                  // in the video m= line itself), so PT-validation doesn't help.
-                  // Browser uses its own offer's rtcp-fb caps; server answer doesn't
-                  // need to redeclare them.
+                } else if(_ln.indexOf('a=end-of-candidates')===0||_ln.indexOf('a=ssrc:')===0){
                   _stripped.push(_ln.slice(0,48));
                 } else if(!_inMedia&&_ln.indexOf('a=')===0&&!_sessOk(_ln)){
                   _stripped.push(_ln.slice(0,48)); // session-level attr not in whitelist
+                } else if(_inMedia&&(_ln.indexOf('a=rtpmap:')===0
+                                   ||_ln.indexOf('a=fmtp:')===0
+                                   ||_ln.indexOf('a=rtcp-fb:')===0)){
+                  // Strip if the PT is not a video codec (audio PTs polluting video section)
+                  if(!_isVid(_getPT(_ln))){_stripped.push(_ln.slice(0,48));}
+                  else{_filtered.push(_ln);}
                 } else {
                   _filtered.push(_ln);
                 }
