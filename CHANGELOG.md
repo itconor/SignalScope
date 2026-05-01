@@ -2,6 +2,29 @@
 
 ---
 
+### Brand Screen plugin v1.3.69 — 2026-05-01
+
+**Local HTTP kiosk route — eliminates hub relay for video brand screens**
+
+The hub relay approach for WebRTC video was fragile: Chrome kept rejecting different lines in SRS's SDP answer (`42e01f`, `label:`, likely more). The root cause is that HTTPS pages can't fetch HTTP SRS directly (mixed-content policy), forcing a relay + SDP mangling.
+
+Fix: video signaling now branches on `window.location.protocol`:
+- **`http:` (new local kiosk route)** — `_bvDirect=true`: browser POSTs SDP directly to SRS and gets the answer back, same as vmixcaller. No hub relay, no SDP transformation issues.
+- **`https:` (existing hub URL)** — `_bvDirect=false`: hub relay path used as before.
+
+New route on **client nodes only**: `GET /brandscreen/kiosk/<studio_id>?token=TOKEN`
+- Proxies the hub's brand screen page (brand colours, logo, animations intact)
+- Page is served over HTTP → `_bvDirect` fires → direct WHEP to SRS
+- Logo images patched to absolute hub URLs (cross-origin `<img>` works without CORS)
+- Auto-reloads every 60 s to pick up station assignment changes from hub
+
+**Kiosk URL format**: `http://LOCAL-CLIENT-IP:5010/brandscreen/kiosk/STUDIO_ID?token=TOKEN`
+Use the same token shown in Settings → Brand Screen → Studios.
+
+Also fixed in hub relay path: strip `a=ssrc:NNN label:...` SRS lines Chrome rejects. SDP processing extracted into shared `_bvApplyAnswer()` helper used by both paths.
+
+---
+
 ### Brand Screen plugin v1.3.68 — 2026-05-01
 
 **Fix: DTLS/SRTP key mismatch causing silent video discard (WebRTC minimal-fix approach)**

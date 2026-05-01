@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.68",
+    "version":  "1.3.69",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3233,6 +3233,39 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
   var _bvPc      = null;
   var _bvRetryT  = null;
   var _bvFailed  = false;
+  // Direct mode: HTTP page can POST to HTTP SRS without mixed-content block.
+  // Set via window.location.protocol — fires automatically when this page is
+  // served from the local client's /brandscreen/kiosk/ route (HTTP).
+  var _bvDirect  = window.location.protocol==='http:';
+
+  // Shared SDP answer processing — strips Chrome-incompatible SRS attributes,
+  // extracts candidates, and calls setRemoteDescription + addIceCandidate.
+  function _bvApplyAnswer(pc,sdp){
+    var _raw=sdp.replace(/\\r?\\n/g,'\\r\\n');
+    _raw=_raw.replace(/profile-level-id=42e01f/gi,'profile-level-id=42001f');
+    var _lines=_raw.split('\\r\\n');
+    var _cands=[],_filtered=[],_curMid=null,_mIdx=-1;
+    for(var _i=0;_i<_lines.length;_i++){
+      var _l=_lines[_i];
+      if(_l.indexOf('m=')===0){_mIdx++;_curMid=null;}
+      if(_l.indexOf('a=mid:')===0){_curMid=_l.slice(6).trim();}
+      if(_l.indexOf('a=candidate:')===0){
+        _cands.push({candidate:_l.slice(2),sdpMid:(_curMid||'0'),sdpMLineIndex:Math.max(0,_mIdx)});
+        continue;
+      }
+      // Strip SRS non-standard ssrc attributes Chrome rejects (e.g. "label:")
+      if(_l.indexOf('a=ssrc:')===0&&_l.indexOf(' label:')>0) continue;
+      _filtered.push(_l);
+    }
+    console.log('[BS-video] SRS answer: '+_filtered.length+' lines, '+_cands.length+' cands');
+    return pc.setRemoteDescription({type:'answer',sdp:_filtered.join('\\r\\n')})
+      .then(function(){
+        console.log('[BS-video] setRemoteDescription OK — injecting '+_cands.length+' ICE cands');
+        _cands.forEach(function(e){
+          pc.addIceCandidate(e).catch(function(err){console.warn('[BS-video] addIceCandidate:',err,e.candidate);});
+        });
+      });
+  }
 
   function _bvCleanup(){
     if(_bvRetryT){ clearTimeout(_bvRetryT); _bvRetryT=null; }
@@ -3332,13 +3365,23 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
         });
       })
       .then(function(){
+        if(_bvDirect){
+          // Direct WHEP: page is served over HTTP so can POST to HTTP SRS without
+          // mixed-content block. Bypass hub relay entirely — same path as vmixcaller.
+          console.log('[BS-video] direct WHEP POST → '+_videoUrl);
+          return fetch(_videoUrl,{
+            method:'POST',
+            headers:{'Content-Type':'application/sdp','Accept':'application/sdp'},
+            body:pc.localDescription.sdp
+          }).then(function(r){
+            if(!r.ok) throw new Error('SRS WHEP HTTP '+r.status);
+            return r.text();
+          }).then(function(sdp){ _bvPc=pc; return _bvApplyAnswer(pc,sdp); });
+        }
+        // Hub relay path (HTTPS page — mixed-content blocks direct SRS fetch).
+        // Browser POSTs to hub; client node forwards to LAN SRS; hub returns answer.
+        // ICE media still flows DIRECTLY browser↔SRS over UDP (not through hub).
         console.log('[BS-video] ICE gathered, posting SDP to hub relay. whep_url='+_videoUrl);
-        // Post SDP offer to hub relay — hub queues it for the local client node
-        // which forwards it to the LAN SRS bridge (HTTP) and posts the answer back.
-        // This sidesteps the HTTPS→HTTP mixed-content block on the WHEP signaling.
-        // Once the SDP answer is exchanged, WebRTC ICE media flows DIRECTLY
-        // between this browser and the SRS bridge over UDP — no further hub involvement.
-        // _tk() appends ?token= so _bs_token_before() establishes kiosk auth on the endpoint.
         return fetch(_tk('/api/brandscreen/whep_relay'),{
           method:'POST',
           headers:{'Content-Type':'application/json'},
@@ -3371,44 +3414,7 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
             return r.json();
           })
           .then(function(a){
-            if(a.answer){
-              // MINIMAL-FIX APPROACH:
-              // The synthetic answer (Chrome's codec template + SRS ICE creds) caused a DTLS/SRTP
-              // key mismatch: Chrome received 1.2 MB from SRS at the ICE level but SRTP MAC
-              // verification failed (0 inbound-rtp packets). The vmixcaller direct test uses SRS's
-              // raw answer and works. Fix: use SRS's raw answer with the ONE change Chrome requires:
-              //   profile-level-id=42e01f → 42001f  (Chrome rejects 42e01f in remote answers but
-              //   accepts 42001f; confirmed working in synthetic approach test)
-              // All ICE/DTLS/fingerprint/setup come from SRS's answer unchanged, so SRTP keys match.
-              // Candidates are extracted from the answer and added via addIceCandidate (cleaner ICE).
-              var _raw=a.answer.replace(/\\r?\\n/g,'\\r\\n');
-              // Fix the ONE value Chrome rejects in answers
-              _raw=_raw.replace(/profile-level-id=42e01f/gi,'profile-level-id=42001f');
-              var _lines=_raw.split('\\r\\n');
-              var _cands=[],_filtered=[],_curMid=null,_mIdx=-1;
-              for(var _i=0;_i<_lines.length;_i++){
-                var _l=_lines[_i];
-                if(_l.indexOf('m=')===0){ _mIdx++; _curMid=null; }
-                if(_l.indexOf('a=mid:')===0){ _curMid=_l.slice(6).trim(); }
-                // Extract candidates (at session or media level) — add via addIceCandidate
-                if(_l.indexOf('a=candidate:')===0){
-                  _cands.push({candidate:_l.slice(2),
-                    sdpMid:(_curMid||'0'),sdpMLineIndex:Math.max(0,_mIdx)});
-                  continue;
-                }
-                _filtered.push(_l);
-              }
-              console.log('[BS-video] SRS answer (minimal fix): '+_filtered.length+' lines, '+_cands.length+' cands');
-              console.log('[BS-video] SRS SDP:\\n'+_filtered.join('\\n'));
-              return pc.setRemoteDescription({type:'answer',sdp:_filtered.join('\\r\\n')})
-                .then(function(){
-                  console.log('[BS-video] setRemoteDescription OK — injecting '+_cands.length+' ICE cands');
-                  _cands.forEach(function(e){
-                    pc.addIceCandidate(e)
-                      .catch(function(err){console.warn('[BS-video] addIceCandidate err:',err,e.candidate);});
-                  });
-                });
-            }
+            if(a.answer){ return _bvApplyAnswer(pc,a.answer); }
             if(a.error){ console.warn('[BS-video] poll error: '+a.error); }
             // Log claimed status — shows whether a client has picked up the task
             if(a.pending) console.log('[BS-video] relay '+(_pollCount<=1?'created':'waiting')+
@@ -5092,4 +5098,55 @@ def register(app, ctx):
 
         threading.Thread(target=_whep_client_poller, daemon=True,
                          name="bs-whep-client-poll").start()
+
+        # ── Local HTTP kiosk route ─────────────────────────────────────────────
+        # On client nodes, kiosk devices on the same LAN can point their browser
+        # to  http://local-client-ip:PORT/brandscreen/kiosk/STUDIO_ID?token=TOKEN
+        # The page is proxied from the hub (brand config is hub-managed) and served
+        # over plain HTTP.  The brand screen JS detects  window.location.protocol
+        # === 'http:'  (_bvDirect=true) and connects directly to SRS via WHEP —
+        # no hub relay, no SDP mangling issues, identical to how vmixcaller works.
+        # Logo images are patched to absolute hub URLs (cross-origin img OK).
+        # The page auto-reloads every 60 s to pick up brand assignment changes.
+        import re as _re_kiosk
+        @app.get("/brandscreen/kiosk/<studio_id>")
+        def bs_kiosk_local(studio_id):
+            g._bs_kiosk = True
+            token = request.args.get("token", "")
+            qs    = f"?token={token}" if token else ""
+            import urllib.request as _ureq2
+            try:
+                url = f"{_whep_hub}/brandscreen/studio/{studio_id}{qs}"
+                req = _ureq2.Request(url, headers={"User-Agent": "SignalScope-LocalKiosk/1.0"})
+                with _ureq2.urlopen(req, timeout=10) as r:
+                    html = r.read().decode("utf-8", errors="replace")
+            except Exception as exc:
+                return (f"<h1>Brand Screen Kiosk</h1>"
+                        f"<p style='font-family:sans-serif;color:#eee;background:#07142b;"
+                        f"padding:20px'>Could not load brand screen from hub "
+                        f"({_whep_hub}):<br><code>{exc}</code></p>"), 503
+            # Patch logo img src to absolute hub URL — cross-origin <img> loads work
+            # without CORS headers (unlike fetch()), so the logo appears correctly.
+            html = _re_kiosk.sub(
+                r'(src=["\'])/api/brandscreen/logo/',
+                r'\g<1>' + _whep_hub + '/api/brandscreen/logo/',
+                html
+            )
+            html = html.replace("'/api/brandscreen/logo/",
+                                f"'{_whep_hub}/api/brandscreen/logo/")
+            html = html.replace('"/api/brandscreen/logo/',
+                                f'"{_whep_hub}/api/brandscreen/logo/')
+            # Auto-reload every 60 s so brand assignment changes propagate without
+            # requiring an SSE connection to the hub (which would need CORS headers).
+            inject = ("<script>"
+                      "setTimeout(function(){window.location.reload();},60000);"
+                      "</script>")
+            html = html.replace("</head>", inject + "</head>", 1)
+            resp = make_response(html)
+            resp.headers["Content-Type"] = "text/html; charset=utf-8"
+            # Remove hub's security headers that would block local-origin resources
+            for _h in ("Content-Security-Policy", "X-Frame-Options",
+                       "X-Content-Type-Options"):
+                resp.headers.pop(_h, None)
+            return resp
 
