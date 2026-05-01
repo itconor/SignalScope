@@ -2,6 +2,20 @@
 
 ---
 
+### Brand Screen plugin v1.3.25 — 2026-05-01
+
+**Accent Colour repurposed as LED Colour**
+
+The "Accent Colour" field was defined as a CSS variable `--accent` in the screen template but never actually used anywhere — fully inert. It is now repurposed as **LED Colour**: the colour sent to DMX when this brand is live.
+
+- Renamed in the brand form from "Accent Colour" to "LED Colour"
+- Default for new brands is empty (same as brand colour) — no change in behaviour for existing brands
+- When set to a different colour than the brand colour, the LEDs show the LED colour while the screen shows the brand colour (useful for e.g. tungsten-warm LEDs behind a blue-branded screen)
+- The LED preview swatch in the CueServer LED section now reflects the LED colour picker, not the brand colour
+- `_cueserver_trigger` uses LED colour if set, falling back to brand colour
+
+---
+
 ### Brand Screen plugin v1.3.24 — 2026-05-01
 
 **CueServer LED: simplified brand form — colour + brightness is all you need**

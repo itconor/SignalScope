@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.24",
+    "version":  "1.3.25",
 }
 
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -90,7 +90,7 @@ def _new_station():
         "name":               "My Station",
         "enabled":            True,
         "brand_colour":       "#17a8ff",
-        "accent_colour":      "#ffffff",
+        "accent_colour":      "",        # repurposed as LED colour; empty = same as brand_colour
         "bg_style":           "particles",
         "logo_anim":          "orbit",
         "show_clock":         True,
@@ -292,11 +292,12 @@ def _cueserver_trigger(studio, station):
         return
     cs_cmd = (station.get("cueserver_cmd") or "").strip()
     if not cs_cmd:
-        # Fall back to live DMX colour command from brand colour + brightness
+        # Generate live DMX colour command from LED colour (accent_colour) or brand colour + brightness
         strips = studio.get("cs_strips") or []
-        if strips and station.get("brand_colour"):
-            bri    = int(station.get("cs_brightness") or 100)
-            cs_cmd = _cs_colour_cmd(station["brand_colour"], strips, bri)
+        if strips:
+            led_col = (station.get("accent_colour") or "").strip() or station.get("brand_colour", "#17a8ff")
+            bri     = int(station.get("cs_brightness") or 100)
+            cs_cmd  = _cs_colour_cmd(led_col, strips, bri)
     if not cs_cmd:
         return
     with _cs_lock:
@@ -1588,7 +1589,14 @@ function _stationForm(s){
     +'<span>Enabled</span></label></div></div>'
     +'<div class="grid2">'
     +'<div class="field"><label>Brand Colour</label><input type="color" id="f-brand-'+s.id+'" value="'+_esc(s.brand_colour)+'"></div>'
-    +'<div class="field"><label>Accent Colour</label><input type="color" id="f-accent-'+s.id+'" value="'+_esc(s.accent_colour)+'"></div>'
+    +(function(){
+      // LED Colour: if empty (new default) show brand colour as the picker value
+      var ledCol=s.accent_colour||s.brand_colour||'#17a8ff';
+      return '<div class="field"><label>LED Colour</label>'
+        +'<input type="color" id="f-accent-'+s.id+'" value="'+_esc(ledCol)+'">'
+        +'<p class="hint" style="margin-top:3px">Colour sent to DMX LEDs when this brand is live. Change only if your LEDs should show a different colour from the screen.</p>'
+        +'</div>';
+    })()
     +'</div>'
     +'<hr class="sep">'
     +'<div class="slabel">Animation</div>'
@@ -1658,7 +1666,9 @@ function _stationForm(s){
         +'<div class="field" style="flex:1;min-width:160px"><label>Preview on studio</label>'
         +'<select id="f-cs-studio-'+s.id+'">'+stOpts+'</select></div>'
         +'<div style="display:flex;align-items:center;gap:8px;padding-bottom:1px">'
-        +'<span id="f-cs-swatch-'+s.id+'" style="width:22px;height:22px;border-radius:4px;border:1px solid var(--bor);background:'+_esc(s.brand_colour||'#17a8ff')+';flex-shrink:0"></span>'
+        +(function(){var lc=s.accent_colour||s.brand_colour||'#17a8ff';
+          return '<span id="f-cs-swatch-'+s.id+'" style="width:22px;height:22px;border-radius:4px;border:1px solid var(--bor);background:'+_esc(lc)+';flex-shrink:0" title="LED colour"></span>';
+        })()
         +'<button class="btn bg bs" data-action="cs-preview" data-sid="'+s.id+'">💡 Preview</button>'
         +'</div>'
         +'</div>'
@@ -1942,7 +1952,9 @@ function _csBri(station_id){
 function _csPreview(station_id){
   var studio_id=_v('f-cs-studio-'+station_id)||'';
   if(!studio_id){_msg('Choose a studio to preview on',false); return;}
-  var colour=_v('f-brand-'+station_id)||((_stById(station_id)||{}).brand_colour||'#17a8ff');
+  // Use LED colour (accent) if set, otherwise brand colour
+  var ledCol=_v('f-accent-'+station_id)||_v('f-brand-'+station_id)||((_stById(station_id)||{}).brand_colour||'#17a8ff');
+  var colour=ledCol;
   var bri=_csBri(station_id);
   var statusEl=document.getElementById('f-cs-status-'+station_id);
   if(statusEl)statusEl.textContent='Sending…';
@@ -2028,11 +2040,21 @@ function _checkOnboard(){
 })();
 document.addEventListener('change',function(e){
   if(e.target.dataset.npSel) _npSrcChanged(e.target.dataset.npSel);
-  // Keep CueServer colour swatch in sync with brand colour picker
-  if(e.target.id&&e.target.id.startsWith('f-brand-')){
-    var _stId=e.target.id.replace('f-brand-','');
+  // Sync LED swatch to LED colour picker (f-accent-*)
+  if(e.target.id&&e.target.id.startsWith('f-accent-')){
+    var _stId=e.target.id.replace('f-accent-','');
     var sw=document.getElementById('f-cs-swatch-'+_stId);
     if(sw) sw.style.background=e.target.value;
+  }
+  // Also sync LED swatch to brand colour if no separate LED colour input exists
+  if(e.target.id&&e.target.id.startsWith('f-brand-')){
+    var _stId2=e.target.id.replace('f-brand-','');
+    var accentEl=document.getElementById('f-accent-'+_stId2);
+    // Only update swatch from brand if LED colour picker not present (section hidden)
+    if(!accentEl){
+      var sw2=document.getElementById('f-cs-swatch-'+_stId2);
+      if(sw2) sw2.style.background=e.target.value;
+    }
   }
 });
 // Live-update brightness % labels as range sliders move
@@ -3105,7 +3127,7 @@ def register(app, ctx):
     def _screen_params(st, studio_id="", studio_name="", kiosk_token=""):
         """Build render_template_string kwargs for the screen template."""
         brand  = (st or {}).get("brand_colour", "#17a8ff")
-        accent = (st or {}).get("accent_colour", "#ffffff")
+        accent = (st or {}).get("accent_colour", "") or "#ffffff"
         r, g, b = _hex_rgb(brand)
         pal    = _brand_palette(brand)
         sid    = (st or {}).get("id", "") if st else ""
