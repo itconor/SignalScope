@@ -1,6 +1,6 @@
 # vMix Caller — SignalScope Plugin Manual
 
-**Plugin version:** 1.7.3  
+**Plugin version:** 1.8.2  
 **Applies to:** SignalScope 3.5+
 
 ---
@@ -15,7 +15,7 @@
 6. [Zoom API Integration](#6-zoom-api-integration)
 7. [Zoom Participant Management](#7-zoom-participant-management)
 8. [Zoom Webhooks](#8-zoom-webhooks)
-9. [Video Preview — SRT Bridge](#9-video-preview--srt-bridge)
+9. [Video Preview — SRS Bridge](#9-video-preview--srs-bridge)
 10. [Video Preview — NDI](#10-video-preview--ndi)
 11. [The Client Operator Page](#11-the-client-operator-page)
 12. [The Hub Page](#12-the-hub-page)
@@ -45,6 +45,7 @@ The vMix Caller plugin gives you full control of Zoom meetings from within Signa
 - Zoom meetings overview — same list visible on all client nodes
 - Live Zoom participant panel (appears once a meeting is active)
 - Site selector and vMix config push
+- SRS Bridge Docker management — start/stop the SRS container on any connected site from the hub, no SSH required
 - Saved meetings management
 
 **Presenter page (studio machine bookmark):**
@@ -100,7 +101,8 @@ Zoom credentials live only on the hub. Client nodes proxy Zoom requests to the h
 | SignalScope client node | At the same site as vMix, connected to hub |
 | vMix | With a Zoom input already configured |
 | Zoom Server-to-Server OAuth app | For Zoom API features (optional but recommended) |
-| SRS Docker or NDI (optional) | For caller video preview |
+| Docker (optional) | For SRS bridge video preview — auto-install available on Linux |
+| ndi-python (optional) | For NDI video preview on Linux x86-64 / aarch64 |
 
 The vMix Caller plugin requires hub/client mode. It will not function usefully in standalone mode.
 
@@ -123,8 +125,8 @@ The vMix Caller plugin requires hub/client mode. It will not function usefully i
 ### Step 1 — Hub: Site & vMix Configuration
 
 1. Open **vMix Caller** on the hub
-2. Under **Site & Settings**, select the site node running alongside vMix from the **vMix Site** dropdown
-3. If you have multiple vMix machines, configure **multiple instances** — each instance gets its own name, vMix IP/port, input number, and bridge URL
+2. Under **Site & Instance**, select the site node running alongside vMix from the **vMix Site** dropdown
+3. If you have multiple vMix machines, configure **multiple instances** — each instance gets its own name, vMix IP/port, input number, and preview URL
 4. For each instance, enter:
    - **Instance name** (e.g. "Studio 1", "OB Unit") — this is the studio name presenters see
    - **vMix IP** — as seen from the client node (usually `127.0.0.1` if vMix is on the same machine, otherwise the LAN IP of the vMix PC)
@@ -312,88 +314,152 @@ To verify webhooks are arriving, watch the participant panel — when a new part
 
 ---
 
-## 9. Video Preview — SRT Bridge
+## 9. Video Preview — SRS Bridge
 
 Caller video preview is **optional**. All meeting controls and the Zoom API features work without it.
 
-To enable the SRT bridge preview, run an SRS Docker container that receives an SRT stream from vMix and converts it to HLS.
+The SRS bridge runs an SRS Docker container that receives SRT video from vMix and makes it available to browsers either via **WebRTC/WHEP** (recommended) or **HLS** (legacy). The hub page includes an **SRS Bridge** card to start and stop the container on any connected site — no SSH required.
 
-### Option A — Bridge on the Studio LAN *(recommended)*
+> **Also used by Brand Screen:** If you have the Brand Screen plugin installed, it can display the SRS stream as a full-screen video background. The same SRS container serves both vMix Caller presenter preview and Brand Screen video backgrounds simultaneously.
 
-Run the bridge on any Ubuntu machine on the **same LAN as vMix** — the SignalScope client node works well for this.
+---
 
-**1. Start the SRS container:**
+### 9.1 SRS Server Card (Automatic Setup)
+
+The hub page includes a **🐳 SRS Bridge** card that manages Docker on the connected client site.
+
+1. On the hub page, select the target site from the **vMix Site** dropdown
+2. Scroll to the **🐳 SRS Bridge** card — the current container status is shown
+3. Click **▶ Start SRS**
+
+The plugin automatically:
+- Writes the correct SRS config file (SRT + WebRTC pipeline enabled)
+- Detects the client machine's LAN IP and sets it as the WebRTC ICE CANDIDATE
+- Starts the `ossrs/srs:5` container with all required ports
+
+> **First start:** Docker must pull the `ossrs/srs:5` image (~60 seconds on first run). Subsequent starts are near-instant.
+
+> **Docker not installed:** A note appears in the SRS card. Open the **client page** on the client node to install Docker using the plugin's built-in installer (Linux only).
+
+Status updates every ~12 seconds as the client reports back to the hub.
+
+**Ports opened by the container:**
+
+| Port | Use |
+|------|-----|
+| `10080/UDP` | SRT input from vMix |
+| `8080` | HTTP server (SRS player pages + HLS fallback) |
+| `1935` | RTMP (internal SRT→RTMP→WebRTC pipeline) |
+| `1985` | HTTP API + WHEP endpoint |
+| `8000/UDP` | WebRTC media (SRTP/ICE) |
+
+---
+
+### 9.2 Option A — WebRTC Preview *(recommended)*
+
+WebRTC delivers caller video with sub-second latency directly in the presenter's browser. The browser connects to SRS over the LAN — no HLS segment buffering, no hub relay.
+
+**1. Start SRS**
+
+Use the **SRS Bridge** card on the hub page, or run manually on the client/SRS machine:
 
 ```bash
-docker run -d --name srs-srt --restart unless-stopped \
-  -p 10080:10080/udp -p 8080:8080 \
-  ossrs/srs:5 ./objs/srs -c conf/srt.conf
+docker run -d --name srs --restart unless-stopped \
+  -p 10080:10080/udp -p 8080:8080 -p 1935:1935 \
+  -p 1985:1985 -p 8000:8000/udp \
+  -e CANDIDATE=192.168.13.2 \
+  -v /opt/signalscope/srs/rtc.conf:/usr/local/srs/conf/rtc.conf:ro \
+  ossrs/srs:5 ./objs/srs -c conf/rtc.conf
 ```
 
-**2. Configure vMix SRT output:**
+Replace `192.168.13.2` with the **LAN IP of the SRS machine**. The `CANDIDATE` env var is critical — without it SRS advertises its Docker-internal IP (172.17.x.x) and browsers on the LAN cannot complete WebRTC ICE. The **Start SRS** button in the plugin sets this automatically.
+
+**2. Configure vMix SRT output**
 
 In vMix, open the Zoom input settings → **Output** → enable **SRT Output**:
 
 | Field | Value |
 |-------|-------|
 | Type | Caller |
-| Hostname | LAN IP of the bridge machine (e.g. `192.168.13.2`) |
+| Hostname | LAN IP of the SRS machine |
 | Port | `10080` |
-| Stream ID | `#!::h=live/caller,m=publish` |
+| Stream ID | `#!::r=live/caller,m=publish` |
 | Latency | `500` ms |
-| Quality | H264 2 Mbps AAC 128 kbps (or as required) |
 
-**3. Set the Bridge URL in the plugin:**
+**3. Set the Preview URL**
 
-On the hub operator page, select the instance, set the **Preview Mode** to **SRT Bridge**, and enter:
+On the hub page, select the instance and set **Preview URL** to:
 ```
-http://192.168.13.2:8080/live/caller.m3u8
+webrtc://192.168.13.2/live/caller
 ```
+Replace with the SRS machine's LAN IP. Click **💾 Save & Push to Site**.
 
-Click **💾 Save & Push to Site**.
+**4. Presenter page URL**
 
-**4. HTTPS hubs — presenter page URL:**
-
-If your hub uses HTTPS, open the presenter page from the **client node URL**, not the hub URL. This prevents the browser blocking HTTP video as mixed content:
+The presenter's browser must be on the same LAN as SRS. Bookmark the presenter page from the **client node URL**:
 ```
 http://[client-node-ip]:[port]/hub/vmixcaller/presenter
 ```
 
+> If the hub is on the same LAN as SRS (e.g. both are on the studio LAN), the hub URL works too. The restriction only applies when the hub is on a remote server — the hub machine cannot reach the LAN SRS IP on behalf of presenters' browsers.
+
 ---
 
-### Option B — Bridge on the Hub Server
+### 9.3 Option B — HLS Stream *(legacy / hub-server bridge)*
 
-Use this if presenters will be accessing the page from outside the studio LAN, or if you prefer to centralise everything on the hub.
+Use HLS when presenters need to access the page from outside the studio LAN, or when SRS runs on the hub server itself. HLS adds ~3–5 seconds of buffering latency but works from any browser over HTTPS without LAN access requirements.
 
-vMix pushes SRT over the internet to the hub's public IP. The hub requires **UDP port 10080** open in your firewall.
+vMix pushes SRT to the hub's public IP. The hub requires **UDP port 10080** open in your firewall.
 
 **1. Start the SRS container on the hub server:**
 
 ```bash
-docker run -d --name srs-srt --restart unless-stopped \
-  -p 10080:10080/udp -p 127.0.0.1:8080:8080 \
-  ossrs/srs:5 ./objs/srs -c conf/srt.conf
+docker run -d --name srs --restart unless-stopped \
+  -p 10080:10080/udp \
+  -p 127.0.0.1:8080:8080 \
+  -p 1935:1935 \
+  -p 1985:1985 \
+  -p 8000:8000/udp \
+  -v /opt/signalscope/srs/rtc.conf:/usr/local/srs/conf/rtc.conf:ro \
+  ossrs/srs:5 ./objs/srs -c conf/rtc.conf
 ```
 
-Port 8080 is bound to `127.0.0.1` only — SignalScope proxies it to authenticated browsers. Port 10080 (SRT input) is open so vMix can push from the studio.
+Port 8080 is bound to `127.0.0.1` only — SignalScope proxies the HLS stream to authenticated browsers. Port 10080 (SRT input) is open so vMix can push from the studio.
 
-**2. Configure vMix SRT output:**
+**2. Configure vMix SRT output**
 
 Same as Option A but set the Hostname to the **hub's public IP**.
 
-**3. Set the Bridge URL:**
+**3. Set the Preview URL**
 
 ```
 http://127.0.0.1:8080/live/caller.m3u8
 ```
 
-The presenter opens: `https://your-hub/hub/vmixcaller/presenter`
+SignalScope detects the `.m3u8` extension and proxies the stream securely. The presenter page URL is:
+```
+https://your-hub/hub/vmixcaller/presenter
+```
+
+---
+
+### 9.4 Preview Option Comparison
+
+| | WebRTC (Option A) | HLS (Option B) | NDI (Section 10) |
+|-|-------------------|----------------|------------------|
+| Latency | Sub-second | ~3–5 s | Sub-second |
+| Docker required | Yes | Yes | No |
+| Port forwarding | None (LAN only) | UDP 10080 (WAN) | None |
+| Works from remote browser | No — LAN only | Yes | Yes |
+| Platform | Any (Docker) | Any (Docker) | Linux x64/aarch64 |
+| Setup | Hub card / one-click | Manual | Low |
+| Managed from hub UI | ✓ | — | — |
 
 ---
 
 ## 10. Video Preview — NDI
 
-NDI preview is an alternative to the SRT bridge that requires no Docker and no port forwarding. The client node running alongside vMix receives the NDI output directly, encodes it to HLS, and pushes segments to the hub.
+NDI preview is an alternative to the SRS bridge that requires no Docker and no port forwarding. The client node running alongside vMix receives the NDI output directly, encodes it to HLS, and pushes segments to the hub.
 
 ### Requirements
 
@@ -423,16 +489,6 @@ Once configured, the client node:
 4. The hub serves a synthetic HLS manifest to authenticated browsers
 
 The presenter page loads the video through the hub's authenticated proxy — no LAN access needed from the presenter's browser, and no HTTP/HTTPS mixed-content issues.
-
-### NDI vs SRT Bridge Comparison
-
-| | SRT Bridge | NDI |
-|-|-----------|-----|
-| Docker required | Yes | No |
-| Port forwarding | UDP 10080 for hub-server option | None |
-| LAN reach needed | Browser must reach SRS (Option A) or hub does (Option B) | None — hub serves all browsers |
-| Platform | Any | Linux x64/aarch64 only |
-| Setup complexity | Medium | Low |
 
 ---
 
@@ -505,7 +561,8 @@ The hub page is primarily used for initial configuration and Zoom API setup. Day
 
 - **Zoom API credentials** — enter Account ID, Client ID, Client Secret once; test the connection
 - **Webhook configuration** — set the Webhook Secret Token for real-time participant events
-- **Site & Settings** — choose which site to target, configure vMix instances (name, IP, port, input, preview mode), push config to client nodes
+- **Site & Instance** — choose which site to target, configure vMix instances (name, IP, port, input, preview URL), push config to client nodes
+- **SRS Bridge** — start/stop the SRS Docker container on the connected client site; shows container status and Docker availability
 - **Zoom meetings overview** — same meetings list as the client page, useful for monitoring
 - **Zoom participants** — live participant management once a meeting is active
 - **Saved meetings management** — add/remove meeting presets
@@ -519,8 +576,8 @@ The hub page has the same meeting controls and participants panel as the client 
 The presenter page is designed to be bookmarked on the studio's presentation machine — no SignalScope knowledge needed.
 
 **URL:**
-- HTTPS hub with LAN SRT bridge: `http://[client-node-ip]:[port]/hub/vmixcaller/presenter`
-- NDI preview, hub-server SRT bridge, or HTTP hub: `https://your-hub/hub/vmixcaller/presenter`
+- WebRTC preview (recommended): `http://[client-node-ip]:[port]/hub/vmixcaller/presenter`
+- NDI preview, hub-server HLS bridge, or HTTP hub: `https://your-hub/hub/vmixcaller/presenter`
 
 ### Studio Picker
 
@@ -541,7 +598,7 @@ The presenter clicks **🎙 Enter Studio** for their studio. The page then loads
 
 The top of the page shows the full-width caller video. While no call is active, a waiting overlay is shown. Once vMix begins receiving the stream, the overlay clears automatically.
 
-If no Bridge URL or NDI source is configured, a notice is shown but meeting controls still work — video preview is optional.
+If no Preview URL or NDI source is configured, a notice is shown but meeting controls still work — video preview is optional.
 
 ### Hear Caller Audio
 
@@ -614,7 +671,7 @@ These shortcuts work on the hub, client, and presenter pages when no text input 
 
 ### Status dot stays grey / "No site selected"
 
-- Select a site in the Site & Settings dropdown on the hub
+- Select a site in the Site & Instance panel on the hub
 - Click **💾 Save & Push to Site** after selecting
 - Wait up to 15 s for the client to check in
 
@@ -673,12 +730,19 @@ These shortcuts work on the hub, client, and presenter pages when no text input 
 - Click **🎙 Enter Studio** on the correct studio card
 - To go back and switch studios, click **◂ Studios** top-right
 
-### Video feed shows "Stream unavailable" (SRT Bridge)
+### Video feed shows "Stream unavailable" (WebRTC)
 
-- Confirm the SRS Docker container is running: `docker ps | grep srs-srt`
+- Confirm the SRS container is running: on the hub page, check the **🐳 SRS Bridge** card status, or run `docker ps | grep " srs"` on the client node
 - Confirm vMix SRT output is enabled and shows a green indicator in vMix
-- Check the Bridge URL in the plugin settings matches the SRS machine's IP and port
-- For Option A (LAN bridge) with an HTTPS hub: ensure the presenter page is opened from the **client node URL**, not the hub URL
+- Check the Preview URL uses the `webrtc://` prefix and the correct LAN IP
+- The presenter page must be opened from the **client node URL**, not the hub URL, when SRS is on the studio LAN
+- If you started SRS manually, ensure the `CANDIDATE` env var is set to the machine's LAN IP — if it is missing or wrong, WebRTC ICE negotiation will succeed but media will not flow
+
+### Video feed shows "Stream unavailable" (HLS)
+
+- Confirm the SRS container is running: `docker ps | grep " srs"`
+- Confirm the Preview URL ends with `.m3u8` and points to the correct host
+- For hub-server HLS: confirm port 8080 is bound to `127.0.0.1` and SignalScope is proxying it (check `/hub/vmixcaller/video/live/caller.m3u8` in the browser — it should return HLS data or a 404 if the stream hasn't started yet)
 
 ### NDI preview not working
 
@@ -690,8 +754,15 @@ These shortcuts work on the hub, client, and presenter pages when no text input 
 ### Video plays but is black or frozen
 
 - Check the Zoom input in vMix is receiving live video (not a blank caller screen)
-- For SRT: try restarting the SRS container: `docker restart srs-srt`
+- For WebRTC: try stopping and starting SRS from the hub's SRS Bridge card — this regenerates the config with a fresh CANDIDATE IP
+- For SRT/HLS: try `docker restart srs` on the client node
 - Reload the presenter page to reinitialise the video player
+
+### SRS Bridge card shows "docker not found"
+
+- Docker must be installed on the **client node** (the machine running alongside vMix), not the hub
+- Open the **client page** on that machine; the plugin includes a built-in Docker installer for Linux
+- On Windows, install Docker Desktop manually and restart SignalScope
 
 ### Commands are slow / controls don't respond
 

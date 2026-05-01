@@ -69,6 +69,8 @@ Once complete, open `http://localhost:5000`. The setup wizard will guide you thr
 | **Producer View plugin** | Simplified hub view for producers/presenters; station status cards, plain-English fault history, role-based login redirect — installed via Settings → Plugins |
 | **AzuraCast plugin** | AzuraCast web radio integration; polls live now-playing, listener counts, and station health; AZURACAST_FAULT/RECOVERY alerts; optional cross-reference with SignalScope silence detection — installed via Settings → Plugins |
 | **Sync Capture plugin** | Multi-site synchronized audio capture; simultaneous clip grab from any combination of inputs across all sites; EBU R128 LUFS/true-peak, sub-sample alignment, waveform comparison, octave-band spectrum, BWF export, DAW session export (REAPER .rpp + Audition .sesx) — installed via Settings → Plugins |
+| **vMix Caller plugin** | Full Zoom meeting control from SignalScope — vMix API (join/leave/mute/camera/put-on-air), Zoom REST API (create/list/end meetings, cloud participant management, waiting room), real-time Zoom webhooks, saved meeting presets; multi-studio presenter page with full-screen caller video preview (WebRTC/WHEP via SRS bridge — sub-second latency, or NDI); SRS Docker container managed from the hub UI with one click — installed via Settings → Plugins |
+| **Brand Screen plugin** | Animated full-screen studio branding display for Yodeck and kiosk screens; hub-managed station configs pushed to any screen in real time over SSE; per-station logo upload, brand colour, and animated background (particles, aurora, waves, beams, grid, burst, haze, minimal, live video); audio-reactive animations driven by live stream levels; broadcast clock, On Air badge, live now-playing from Zetta or any JSON API, message-from-hub banner; WebRTC video brand screen via the same SRS bridge as vMix Caller; scheduled brand takeovers by day/time; CueServer LED integration; token-authenticated kiosk URL for each studio — installed via Settings → Plugins |
 | **Level & loudness** | dBFS level, LUFS Momentary/Short-term/Integrated (EBU R128), true peak |
 | **Metadata** | RDS PS name, RDS RadioText, stereo flag, TP/TA/PI; DAB service name, DLS now-playing text, ensemble/mode/bitrate/SNR |
 | **Rule alerts** | Silence, clipping, hiss, LUFS true peak, LUFS integrated loudness |
@@ -546,6 +548,34 @@ Multi-site synchronized audio capture at `/hub/synccap`:
 - **💾 DAW Session** button downloads a ZIP of all WAV clips plus a REAPER `.rpp` and Adobe Audition `.sesx` session file — with alignment offsets baked in if alignment has been run
 - BWF broadcast-wave export with timecode metadata per clip
 - Hub-only
+
+#### vMix Caller (`vmixcaller.py`)
+Full Zoom meeting control and caller video preview at `/hub/vmixcaller`:
+- **vMix API** — join/leave meetings, mute self, stop camera, mute all, put callers on air (`ZoomSelectParticipantByName`); reads participants live from the vMix XML status feed
+- **Zoom REST API** — list upcoming and live meetings, create meetings, end meetings, manage cloud participants (mute, unmute request, remove), admit from waiting room
+- **Real-time webhooks** — Zoom sends participant join/leave/waiting-room events directly to the hub; participant panel refreshes within seconds rather than waiting for the 15-second poll
+- **Saved meeting presets** — named presets on the presenter page for one-click joins from any studio
+- **Multi-studio support** — configure multiple vMix instances (e.g. Studio 1, Studio 2, OB Unit); each presenter picks their studio on first visit
+- **Presenter page** (`/hub/vmixcaller/presenter`) — designed for studio booking; full-screen caller video, Hear Caller audio, in-call controls, no technical knowledge required
+- **WebRTC video preview via SRS bridge** — sub-second latency caller video direct to the browser; SRS Docker container started and stopped from the hub page with one click, LAN IP auto-detected for WebRTC ICE; `webrtc://HOST/app/stream` URL format in Preview URL
+- **HLS fallback** — hub-server SRS bridge option for remote access; SignalScope proxies the HLS stream securely
+- **NDI preview** — alternative to SRS bridge; no Docker required; client node captures NDI output from vMix and relays via hub
+- Commands queued hub→client over NAT; executed within 3 seconds by the client poll cycle
+- Hub + client pages; presenter page accessible at any configured URL
+
+#### Brand Screen (`brandscreen.py`)
+Animated full-screen studio branding display at `/hub/brandscreen`:
+- **Studios and stations** — a Studio is a physical screen (Yodeck device, browser kiosk); a Station is a brand configuration. Assign stations to studios from the hub — all screens update instantly over SSE
+- **Per-station customisation** — logo upload, brand colour (entire screen palette derived from it), animated background style (particles, aurora, waves, beams, grid, burst, haze, minimal, live video), logo animation (orbit rings, pulse, glow, float, spin, glitch, bounce)
+- **Audio-reactive animations** — assign a live stream to a station; orbit ring speed, spin rate, bounce kicks, pulse tempo, bloom intensity, beam width, particle density, and burst energy all respond to the real audio level at 150 ms
+- **Broadcast clock** — live time display; On Air badge; studio-selectable show/hide
+- **Live now-playing** — from Zetta integration or any JSON API; amber message-from-hub banner for hub operator announcements
+- **WebRTC video brand screen** — set background style to "live video" and select an SRS bridge source; the screen connects directly to SRS via WebRTC/WHEP on the studio LAN (same SRS container as vMix Caller), sub-second latency, no hub relay
+- **Scheduled brand takeovers** — schedule a different station to take over a studio at a specific time (recurring by day-of-week or one-off by date); auto-reverts when the window ends
+- **CueServer LED integration** — per-brand brightness, per-studio zone name, multi-strip DMX; scene discovery auto-saves the DMX command
+- **Kiosk URL** — `http://[client-node-ip]:[port]/brandscreen/kiosk/<studio_id>?token=...` — served over HTTP from the local client, compatible with Yodeck and any screen player; WebRTC video works natively without mixed-content restrictions
+- **Producer access** — users with the Producer role can change brand assignments from the producer login
+- Hub-only (hub manages stations; client nodes serve the local kiosk page)
 
 ### Writing a Plugin
 
