@@ -2,6 +2,20 @@
 
 ---
 
+### Brand Screen plugin v1.3.48 — 2026-05-01
+
+**Fix: WHEP SDP relay broken on kiosk screens — auth blocked before SDP ever reached hub**
+
+Two bugs meant the `whep_relay` POST and `whep_poll` GET never succeeded from the brand screen kiosk page:
+
+1. **`@login_required` + `@csrf_protect` on the relay endpoints** — kiosk pages don't have a session cookie (`_kiosk_response()` suppresses it with `session.modified = False`), so every POST got a 302 redirect to the login page. The browser silently followed the redirect and the fetch resolved as HTML rather than JSON, throwing an error.
+
+2. **Relay fetch used bare URL without `?token=`** — `_bs_token_before()` only establishes kiosk auth when `?token=TOKEN` is present in the request URL. The relay POST was calling `/api/brandscreen/whep_relay` with no token in the URL, so the before-request hook never ran and no session was set up.
+
+Fixes: `bs_whep_relay` and `bs_whep_poll` now do their own auth check (`session.get("logged_in") or _validate_bs_token(request.args.get("token"))`). The kiosk screen JS now calls both via `_tk()` so the token is appended to the URL. `@login_required` and `@csrf_protect` removed from both endpoints. CSRF meta tag added to `_SCREEN_TPL` head for completeness.
+
+---
+
 ### Brand Screen plugin v1.3.47 — 2026-05-01
 
 **Fix: video brand screen WebRTC via hub↔client SDP relay + suppress animation effects over video**

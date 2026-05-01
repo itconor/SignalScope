@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.47",
+    "version":  "1.3.48",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -2758,6 +2758,7 @@ _SCREEN_TPL = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="csrf-token" content="{{csrf_token()}}">
 <title>{{sname|e}}</title>
 <style nonce="{{csp_nonce()}}">
 *{box-sizing:border-box;margin:0;padding:0}
@@ -3278,9 +3279,10 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
         // This sidesteps the HTTPS→HTTP mixed-content block on the WHEP signaling.
         // Once the SDP answer is exchanged, WebRTC ICE media flows DIRECTLY
         // between this browser and the SRS bridge over UDP — no further hub involvement.
-        return fetch('/api/brandscreen/whep_relay',{
+        // _tk() appends ?token= so _bs_token_before() establishes kiosk auth on the endpoint.
+        return fetch(_tk('/api/brandscreen/whep_relay'),{
           method:'POST',
-          headers:{'Content-Type':'application/json','X-CSRFToken':_csrfToken},
+          headers:{'Content-Type':'application/json'},
           credentials:'same-origin',
           body:JSON.stringify({whep_url:_videoUrl,sdp:pc.localDescription.sdp})
         });
@@ -3301,7 +3303,7 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
             _bvRetryT=setTimeout(_bvConnect,5000);
             return;
           }
-          fetch('/api/brandscreen/whep_poll/'+_rid,{credentials:'same-origin'})
+          fetch(_tk('/api/brandscreen/whep_poll/'+_rid),{credentials:'same-origin'})
           .then(function(r){return r.json();})
           .then(function(a){
             if(a.answer){
@@ -4457,9 +4459,13 @@ def register(app, ctx):
     # Allows brand screens served over HTTPS to do WebRTC with an HTTP-only SRS
     # bridge: the SDP exchange goes hub→client→SRS; media flows browser↔SRS directly.
     @app.post("/api/brandscreen/whep_relay")
-    @login_required
-    @csrf_protect
     def bs_whep_relay():
+        # Accept either an active session (admin) or a valid kiosk token in ?token=
+        # No @login_required / @csrf_protect — kiosk pages have no session cookie.
+        # _bs_token_before() already validated the token if present in the URL.
+        _tok = (request.args.get("token") or "").strip()
+        if not session.get("logged_in") and not _validate_bs_token(_tok):
+            return jsonify({"error": "Unauthorized"}), 403
         import uuid as _uuid
         data      = request.get_json(force=True) or {}
         whep_url  = (data.get("whep_url") or "").strip()
@@ -4475,8 +4481,11 @@ def register(app, ctx):
         return jsonify({"relay_id": relay_id})
 
     @app.get("/api/brandscreen/whep_poll/<relay_id>")
-    @login_required
     def bs_whep_poll(relay_id):
+        # Same kiosk-or-session auth as the relay POST
+        _tok = (request.args.get("token") or "").strip()
+        if not session.get("logged_in") and not _validate_bs_token(_tok):
+            return jsonify({"error": "Unauthorized"}), 403
         with _whep_lock:
             r = _whep_relays.get(relay_id)
         if not r:
