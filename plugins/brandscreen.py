@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.44",
+    "version":  "1.3.45",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1811,16 +1811,27 @@ function _stationForm(s){
     +'<input type="checkbox" id="f-en-'+s.id+'"'+(s.enabled?' checked':'')+' style="accent-color:var(--acc);width:16px;height:16px">'
     +'<span>Enabled</span></label></div></div>'
     +'<div class="grid2">'
-    +'<div class="field"><label>Brand Colour</label><input type="color" id="f-brand-'+s.id+'" value="'+_esc(s.brand_colour)+'"></div>'
+    +'<div class="field"><label>Brand Colour</label>'
+    +'<div style="display:flex;align-items:center;gap:6px">'
+    +'<input type="color" id="f-brand-'+s.id+'" value="'+_esc(s.brand_colour)+'">'
+    +'<input type="text" id="f-brand-hex-'+s.id+'" value="'+_esc(s.brand_colour)+'" maxlength="7" placeholder="#ff0000"'
+    +' style="width:80px;font-family:monospace;font-size:12px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:5px 7px">'
+    +'</div></div>'
     +(function(){
       // LED Colour: if empty (new default) show brand colour as the picker value.
       // data-linked="1" means no explicit LED override — the picker tracks the brand colour.
       var ledCol=s.accent_colour||s.brand_colour||'#17a8ff';
       var isLinked=(!s.accent_colour||s.accent_colour===s.brand_colour)?'1':'0';
+      var diffWarn=(!isLinked||isLinked==='0')?'<a href="#" class="reset-led-link" data-sid="'+s.id+'" style="font-size:11px;color:var(--wn);text-decoration:none;margin-left:4px" title="Click to reset LED colour to match brand colour">↩ Use brand colour</a>':'';
       return '<div class="field"><label>LED Colour</label>'
+        +'<div style="display:flex;align-items:center;gap:6px">'
         +'<input type="color" id="f-accent-'+s.id+'" value="'+_esc(ledCol)+'"'
         +' data-linked="'+isLinked+'" data-brand="'+_esc(s.brand_colour||'#17a8ff')+'">'
-        +'<p class="hint" style="margin-top:3px">Colour sent to DMX LEDs when this brand is live. Automatically follows the brand colour — only change if LEDs should show a different tint.</p>'
+        +'<input type="text" id="f-accent-hex-'+s.id+'" value="'+_esc(ledCol)+'" maxlength="7" placeholder="#ff0000"'
+        +' style="width:80px;font-family:monospace;font-size:12px;background:#0d1e40;border:1px solid var(--bor);border-radius:6px;color:var(--tx);padding:5px 7px">'
+        +diffWarn
+        +'</div>'
+        +'<p class="hint" style="margin-top:3px">Colour sent to DMX LEDs — type an exact hex value (e.g. #ff0000 for pure red). Automatically follows brand colour unless you type a different value here.</p>'
         +'</div>';
     })()
     +'</div>'
@@ -2335,6 +2346,22 @@ document.addEventListener('click',function(e){
   var url=e.target.closest('.row-url');
   if(url){ navigator.clipboard&&navigator.clipboard.writeText(url.textContent.trim()); _msg('URL copied.',true); }
 });
+// "↩ Use brand colour" link — resets LED picker to match brand picker
+document.addEventListener('click',function(e){
+  var lnk=e.target.closest('.reset-led-link'); if(!lnk) return;
+  e.preventDefault();
+  var _sid=lnk.dataset.sid;
+  var brandEl=document.getElementById('f-brand-'+_sid);
+  var accentEl=document.getElementById('f-accent-'+_sid);
+  if(!brandEl||!accentEl) return;
+  var col=brandEl.value;
+  accentEl.value=col; accentEl.dataset.linked='1'; accentEl.dataset.brand=col;
+  var hexAc=document.getElementById('f-accent-hex-'+_sid);
+  if(hexAc) hexAc.value=col;
+  var sw=document.getElementById('f-cs-swatch-'+_sid);
+  if(sw) sw.style.background=col;
+  lnk.remove(); // hide the link once user has reset
+});
 document.getElementById('add-studio-btn').addEventListener('click',_addStudio);
 document.getElementById('add-station-btn').addEventListener('click',_addStation);
 document.getElementById('logo-input').addEventListener('change',function(){ _doUpload(this.files[0]); });
@@ -2391,33 +2418,71 @@ document.addEventListener('change',function(e){
     if(_laWrap) _laWrap.style.display=_isVid?'none':'';
     if(_alWrap) _alWrap.style.display=_isVid?'none':'';
   }
-  // Sync LED swatch to LED colour picker (f-accent-*) — also mark as explicitly overridden
-  if(e.target.id&&e.target.id.startsWith('f-accent-')){
+  // Sync LED swatch + hex input to LED colour picker (f-accent-*) — mark as explicitly overridden
+  if(e.target.id&&e.target.id.startsWith('f-accent-')&&!e.target.id.includes('-hex-')){
     var _stId=e.target.id.replace('f-accent-','');
     var sw=document.getElementById('f-cs-swatch-'+_stId);
     if(sw) sw.style.background=e.target.value;
+    var hexAc=document.getElementById('f-accent-hex-'+_stId);
+    if(hexAc) hexAc.value=e.target.value;
     e.target.dataset.linked='0'; // user manually set LED colour; stop tracking brand
   }
-  // When brand colour changes: if LED colour is linked (tracking brand), sync it too
-  if(e.target.id&&e.target.id.startsWith('f-brand-')){
+  // When brand colour picker changes: sync hex input + sync LED if linked
+  if(e.target.id&&e.target.id.startsWith('f-brand-')&&!e.target.id.includes('-hex-')){
     var _stId2=e.target.id.replace('f-brand-','');
+    var hexBr=document.getElementById('f-brand-hex-'+_stId2);
+    if(hexBr) hexBr.value=e.target.value;
     var accentEl=document.getElementById('f-accent-'+_stId2);
     if(accentEl&&accentEl.dataset.linked!=='0'){
       accentEl.value=e.target.value;
       accentEl.dataset.brand=e.target.value;
+      var hexAc2=document.getElementById('f-accent-hex-'+_stId2);
+      if(hexAc2) hexAc2.value=e.target.value;
       var sw2=document.getElementById('f-cs-swatch-'+_stId2);
       if(sw2) sw2.style.background=e.target.value;
     }
   }
 });
-// Live-update brightness % labels as range sliders move
+// Live-update brightness % labels as range sliders move + hex inputs ↔ colour pickers
 document.addEventListener('input',function(e){
   // Per-brand brightness slider (on brand/station form)
   if(e.target.id&&e.target.id.startsWith('f-csBri-')){
     var _stId=e.target.id.replace('f-csBri-','');
     var lbl=document.getElementById('f-csBri-lbl-'+_stId);
     if(lbl) lbl.textContent=e.target.value+'%';
-    // Also update the CueServer colour swatch preview opacity to hint at brightness
+  }
+  // Brand hex text input → update colour picker
+  if(e.target.id&&e.target.id.startsWith('f-brand-hex-')){
+    var _stId=e.target.id.replace('f-brand-hex-','');
+    var v=e.target.value.trim();
+    if(!v.startsWith('#')) v='#'+v;
+    if(/^#[0-9a-fA-F]{6}$/.test(v)){
+      var cp=document.getElementById('f-brand-'+_stId);
+      if(cp){ cp.value=v;
+        // Trigger brand sync (LED if linked)
+        var accentEl=document.getElementById('f-accent-'+_stId);
+        if(accentEl&&accentEl.dataset.linked!=='0'){
+          accentEl.value=v; accentEl.dataset.brand=v;
+          var hexAcB=document.getElementById('f-accent-hex-'+_stId);
+          if(hexAcB) hexAcB.value=v;
+          var swB=document.getElementById('f-cs-swatch-'+_stId);
+          if(swB) swB.style.background=v;
+        }
+      }
+    }
+  }
+  // LED hex text input → update colour picker
+  if(e.target.id&&e.target.id.startsWith('f-accent-hex-')){
+    var _stId=e.target.id.replace('f-accent-hex-','');
+    var v=e.target.value.trim();
+    if(!v.startsWith('#')) v='#'+v;
+    if(/^#[0-9a-fA-F]{6}$/.test(v)){
+      var cp=document.getElementById('f-accent-'+_stId);
+      if(cp){ cp.value=v; cp.dataset.linked='0';
+        var sw=document.getElementById('f-cs-swatch-'+_stId);
+        if(sw) sw.style.background=v;
+      }
+    }
   }
 });
 

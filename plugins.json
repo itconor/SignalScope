@@ -15,7 +15,7 @@
     "file": "brandscreen.py",
     "icon": "📺",
     "description": "Animated full-screen studio branding display. Studios (physical screens) are assigned Stations (brand configs) — change the assignment instantly via REST API and all browsers update in real time over SSE. Per-station logo upload, brand colour, background style (particles, aurora, waves, beams, grid, burst, haze, minimal, live video), and logo animation (orbit rings, pulse, glow, float, spin, glitch, bounce). Background hue derived from brand colour — the entire screen lives in your brand palette. Logo fills most of the screen. Assign a live audio stream to animate orbit rings, spin speed, bounce kicks, pulse tempo, bloom, beams, burst rays, grid lines, and particles with real audio levels at 150 ms. Broadcast clock, On Air badge, live now-playing from Zetta or any JSON API, message-from-hub amber banner. Token-auth kiosk URL per studio. Yodeck compatible. Anti-burn-in pixel drift. Schedule different brands to take over studios at specific days/times or one-off on a specific date — auto-reverts when the window ends. Producer login gets write access to Brand Screen. CueServer LED integration — per-brand brightness slider (0–100), per-studio zone name for ZONE/Preset command format, multi-strip DMX config. Scene discovery auto-saves the command — no manual typing required. Video brand screen — select a vMix Caller SRS bridge source; the brand screen connects directly via WebRTC/WHEP on the same LAN, no hub relay, sub-second latency. Hub-only.",
-    "version": "1.3.44",
+    "version": "1.3.45",
     "requirements": "",
     "url": "https://raw.githubusercontent.com/itconor/SignalScope/main/plugins/brandscreen.py"
   },

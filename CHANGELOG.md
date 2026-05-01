@@ -2,6 +2,20 @@
 
 ---
 
+### Brand Screen plugin v1.3.45 — 2026-05-01
+
+**Fix: macOS colour picker "Maraschino" top-left red is #ff2600 (15% green) — add hex inputs for exact colour entry**
+
+Root cause: the macOS system colour panel opened via "Show Colours…" uses the Crayon palette where the top-left swatch is "Maraschino" (`#ff2600`), which contains 15% green. Sending that to CueServer produces `Channel R At 100 Channel G At 15` — 15% green makes the LEDs read as orange, not red. Pure red on LEDs requires exactly `#ff0000` (R=100%, G=0%, B=0%).
+
+Fix: hex text inputs added next to both the Brand Colour and LED Colour pickers. The text input shows the exact hex value and is bidirectionally synced with the colour picker — change either and both update. Users can type `#ff0000` directly for true red without guessing which swatch in the system picker is the right one.
+
+Also added: a "↩ Use brand colour" link that appears next to the LED picker whenever the LED colour differs from the brand colour. Clicking it instantly resets the LED picker to match the brand colour (fixing stale orange values without a re-save needed).
+
+Hex input syncing rules: typing a valid 6-digit hex (with or without the `#`) in the Brand hex field also syncs the LED hex/picker if the LED is in linked mode (tracking brand). Typing in the LED hex field marks it as explicitly overridden (unlinked).
+
+---
+
 ### Brand Screen plugin v1.3.44 — 2026-05-01
 
 **Fix: LED colour reverts to stale orange/old brand colour after changing brand colour**
