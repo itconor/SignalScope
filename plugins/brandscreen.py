@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.46",
+    "version":  "1.3.47",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -40,6 +40,20 @@ _MLOCK       = threading.Lock()
 # revert so the operator assignment sticks).
 _schedule_state: dict = {}   # studio_id → {pre_station_id, active_schedule_id, rest_override}
 _SCHED_LOCK = threading.Lock()
+
+# ─────────────────────────────────── WHEP relay (video brand screen) ─────────
+# The brand screen page is served over HTTPS from the hub.  The SRS bridge WHEP
+# endpoint is HTTP on the local LAN.  Browsers block HTTP fetches from HTTPS
+# pages (mixed-content policy).  We relay the SDP exchange through the hub so
+# the brand screen browser never makes a direct HTTP request:
+#   browser (HTTPS) → POST /api/brandscreen/whep_relay  →  hub stores SDP
+#   client poller   → GET  /api/brandscreen/whep_cmd    →  client forwards to SRS
+#   client          → POST /api/brandscreen/whep_done/  →  hub stores answer
+#   browser         → GET  /api/brandscreen/whep_poll/  →  browser gets answer
+# Once SDP is exchanged, WebRTC ICE media flows DIRECTLY browser ↔ SRS via UDP
+# (not HTTP) — no mixed-content issue for the media path.
+_whep_relays: dict = {}   # relay_id → {whep_url, sdp, answer, ts, claimed}
+_whep_lock   = threading.Lock()
 
 # ─────────────────────────────────── CueServer pending commands ───────────────
 # site_name → {"host": str, "cmd": str}  — latest brand-change command per site
@@ -2958,6 +2972,21 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 .prng:nth-child(2){animation-delay:1.07s}.prng:nth-child(3){animation-delay:2.13s}
 @keyframes pulse-out{0%{transform:scale(.45);opacity:.8}100%{transform:scale(1.8);opacity:0}}
 
+/* ── Video mode — suppress all brand-colour animation overlays ────────────── */
+/* When bg_style=video the full-screen video IS the visual. All reactive/bloom/
+   vignette/pulse overlays tint the video with brand colour — suppress them. */
+body.bg-video #bg-pulse,
+body.bg-video #vignette,
+body.bg-video #beat-flash,
+body.bg-video #lev-bloom,
+body.bg-video #lev-bloom-core,
+body.bg-video .orbit-wrap,
+body.bg-video .pulse-wrap{display:none!important}
+/* Logo: keep visible but lighter — logo floats over the video without a glow ring */
+body.bg-video #logo-img{filter:none}
+/* No gradient body tint in video mode — video provides its own background */
+body.bg-video{background:#000}
+
 /* ── Logo animations ─────────────────────────────────────────────────────── */
 .la-float .logo-zone{animation:lo-float 4s ease-in-out infinite}
 @keyframes lo-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-18px)}}
@@ -3030,7 +3059,7 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 </style>
 </head>
 
-<body class="la-{{logo_anim|e}}">
+<body class="la-{{logo_anim|e}}{% if bg_style == 'video' %} bg-video{% endif %}">
 {% if bg_style == 'particles' %}
 <div class="bg-particles-base"></div>
 <canvas id="cv"></canvas>
@@ -3137,6 +3166,7 @@ var _showOair   = {{show_on_air|lower}};
 var _showNP     = {{show_now_playing|lower}};
 var _levelKey   = '{{level_key|e}}';   // "site|stream" or ""
 var _videoUrl   = '{{video_url|e}}';   // WHEP endpoint URL for video brand (empty = not video)
+var _csrfToken  = (document.querySelector('meta[name="csrf-token"]')||{}).content||'';
 // Full-screen logo mode — when true, all backgrounds/animations/NP are suppressed.
 // Takeovers still work.  SSE reload still works.
 var _fsLogo     = {{full_screen_logo|lower}};
@@ -3243,27 +3273,48 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
         });
       })
       .then(function(){
-        // Route WHEP through the vmixcaller proxy — avoids mixed-content block
-        // (brand screen page is HTTPS; SRS bridge is HTTP on the local LAN).
-        // Same pattern as the vmixcaller presenter view (/api/vmixcaller/whep_proxy).
-        var _whepTarget='/api/vmixcaller/whep_proxy?url='+encodeURIComponent(_videoUrl);
-        return fetch(_whepTarget,{
+        // Post SDP offer to hub relay — hub queues it for the local client node
+        // which forwards it to the LAN SRS bridge (HTTP) and posts the answer back.
+        // This sidesteps the HTTPS→HTTP mixed-content block on the WHEP signaling.
+        // Once the SDP answer is exchanged, WebRTC ICE media flows DIRECTLY
+        // between this browser and the SRS bridge over UDP — no further hub involvement.
+        return fetch('/api/brandscreen/whep_relay',{
           method:'POST',
-          headers:{'Content-Type':'application/sdp'},
+          headers:{'Content-Type':'application/json','X-CSRFToken':_csrfToken},
           credentials:'same-origin',
-          body:pc.localDescription.sdp
+          body:JSON.stringify({whep_url:_videoUrl,sdp:pc.localDescription.sdp})
         });
       })
       .then(function(resp){
-        if(!resp.ok) throw new Error('WHEP HTTP '+resp.status);
-        return resp.text();
+        if(!resp.ok) throw new Error('WHEP relay HTTP '+resp.status);
+        return resp.json();
       })
-      .then(function(sdp){
+      .then(function(d){
+        if(d.error) throw new Error('WHEP relay: '+d.error);
         _bvPc=pc;
-        return pc.setRemoteDescription({type:'answer',sdp:sdp});
+        var _rid=d.relay_id;
+        // Poll for the SDP answer — client node forwards to SRS and posts it back
+        var _pollCount=0;
+        function _pollAnswer(){
+          if(_pollCount++>25){
+            console.warn('[BrandScreen] WHEP relay timeout — no answer after 50 s');
+            _bvRetryT=setTimeout(_bvConnect,5000);
+            return;
+          }
+          fetch('/api/brandscreen/whep_poll/'+_rid,{credentials:'same-origin'})
+          .then(function(r){return r.json();})
+          .then(function(a){
+            if(a.answer){
+              return pc.setRemoteDescription({type:'answer',sdp:a.answer});
+            }
+            _bvRetryT=setTimeout(_pollAnswer,2000);
+          })
+          .catch(function(){ _bvRetryT=setTimeout(_pollAnswer,2000); });
+        }
+        _pollAnswer();
       })
       .catch(function(err){
-        console.warn('[BrandScreen] WHEP connect failed:',err);
+        console.warn('[BrandScreen] WHEP relay failed:',err);
         _bvFailed=true;
         _bvRetryT=setTimeout(_bvConnect,5000);
       });
@@ -4402,6 +4453,86 @@ def register(app, ctx):
         """Return vMix Caller instances with their WHEP URLs for the video brand picker."""
         return jsonify({"sources": _vmix_sources()})
 
+    # ── WHEP relay — browser posts SDP, client forwards to LAN SRS, returns answer
+    # Allows brand screens served over HTTPS to do WebRTC with an HTTP-only SRS
+    # bridge: the SDP exchange goes hub→client→SRS; media flows browser↔SRS directly.
+    @app.post("/api/brandscreen/whep_relay")
+    @login_required
+    @csrf_protect
+    def bs_whep_relay():
+        import uuid as _uuid
+        data      = request.get_json(force=True) or {}
+        whep_url  = (data.get("whep_url") or "").strip()
+        sdp_offer = (data.get("sdp") or "").strip()
+        if not whep_url or not sdp_offer:
+            return jsonify({"error": "Missing whep_url or sdp"}), 400
+        relay_id  = str(_uuid.uuid4())
+        with _whep_lock:
+            _whep_relays[relay_id] = {
+                "whep_url": whep_url, "sdp": sdp_offer,
+                "answer": None, "ts": _time.monotonic(), "claimed": False,
+            }
+        return jsonify({"relay_id": relay_id})
+
+    @app.get("/api/brandscreen/whep_poll/<relay_id>")
+    @login_required
+    def bs_whep_poll(relay_id):
+        with _whep_lock:
+            r = _whep_relays.get(relay_id)
+        if not r:
+            return jsonify({"error": "not_found"}), 404
+        if r["answer"]:
+            return jsonify({"answer": r["answer"]})
+        return jsonify({})
+
+    @app.get("/api/brandscreen/whep_cmd")
+    def bs_whep_cmd():
+        """Client polls here for pending WHEP relay tasks (X-Site auth)."""
+        site = (request.headers.get("X-Site") or "").strip()
+        if not site:
+            return jsonify({}), 400
+        sdata = (hub_server._sites or {}).get(site, {})
+        if not sdata.get("_approved"):
+            return jsonify({}), 403
+        now = _time.monotonic()
+        with _whep_lock:
+            # Expire relays older than 90 s with no answer
+            expired = [k for k, v in _whep_relays.items()
+                       if now - v["ts"] > 90 and v["answer"] is None]
+            for k in expired:
+                del _whep_relays[k]
+            # Find unclaimed pending relay
+            for relay_id, r in _whep_relays.items():
+                if r["answer"] is None and not r["claimed"]:
+                    r["claimed"] = True
+                    return jsonify({"relay_id": relay_id,
+                                    "whep_url": r["whep_url"],
+                                    "sdp": r["sdp"]})
+        return jsonify({})
+
+    @app.post("/api/brandscreen/whep_done/<relay_id>")
+    def bs_whep_done(relay_id):
+        """Client posts SDP answer after forwarding to local SRS bridge."""
+        site = (request.headers.get("X-Site") or "").strip()
+        if not site:
+            return jsonify({}), 400
+        sdata = (hub_server._sites or {}).get(site, {})
+        if not sdata.get("_approved"):
+            return jsonify({}), 403
+        answer = request.get_data(as_text=True).strip()
+        if not answer:
+            # Client failed — unclaim so another site can try
+            with _whep_lock:
+                r = _whep_relays.get(relay_id)
+                if r and r["answer"] is None:
+                    r["claimed"] = False
+            return jsonify({"ok": False})
+        with _whep_lock:
+            r = _whep_relays.get(relay_id)
+            if r:
+                r["answer"] = answer
+        return jsonify({"ok": True})
+
     # ── CueServer: hub poll endpoint (called by client poller thread) ─────────
     @app.get("/api/brandscreen/cueserver_cmd")
     def bs_cueserver_cmd_poll():
@@ -4775,4 +4906,61 @@ def register(app, ctx):
 
         threading.Thread(target=_cueserver_client_poller, daemon=True,
                          name="bs-cueserver-poll").start()
+
+    # ── WHEP relay client poller — runs on client nodes ───────────────────────
+    # When the brand screen page (served over HTTPS from hub) needs to connect
+    # to a local SRS bridge (HTTP), it can't POST directly (mixed content).
+    # The browser posts the SDP offer to the hub; this thread picks it up, forwards
+    # it to the local SRS bridge, and posts the answer back to the hub.
+    # The browser then applies the answer — WebRTC ICE connects browser↔SRS directly.
+    _whep_cfg  = monitor.app_cfg
+    _whep_mode = (getattr(getattr(_whep_cfg, "hub", None), "mode", "") or "").strip()
+    _whep_hub  = (getattr(getattr(_whep_cfg, "hub", None), "hub_url", "") or "").rstrip("/")
+    _whep_site = (getattr(getattr(_whep_cfg, "hub", None), "site_name", "") or "").strip()
+
+    if _whep_mode == "client" and _whep_hub and _whep_site:
+        def _whep_client_poller():
+            import urllib.request as _ureq
+            _cmd_url = f"{_whep_hub}/api/brandscreen/whep_cmd"
+            while True:
+                try:
+                    req = _ureq.Request(_cmd_url,
+                                        headers={"X-Site": _whep_site})
+                    with _ureq.urlopen(req, timeout=6) as r:
+                        d = json.loads(r.read())
+                    relay_id = d.get("relay_id")
+                    whep_url  = d.get("whep_url", "")
+                    sdp_offer = d.get("sdp", "")
+                    if relay_id and whep_url and sdp_offer:
+                        # Forward SDP offer to local SRS bridge
+                        try:
+                            fwd = _ureq.Request(
+                                whep_url,
+                                data=sdp_offer.encode(),
+                                method="POST",
+                                headers={"Content-Type": "application/sdp"},
+                            )
+                            with _ureq.urlopen(fwd, timeout=10) as resp:
+                                answer = resp.read().decode()
+                        except Exception as exc:
+                            monitor.log(f"[brandscreen] WHEP forward failed: {exc}", "warn")
+                            answer = ""
+                        # Post answer (or empty on failure) back to hub
+                        done = _ureq.Request(
+                            f"{_whep_hub}/api/brandscreen/whep_done/{relay_id}",
+                            data=(answer or "").encode(),
+                            method="POST",
+                            headers={"Content-Type": "text/plain",
+                                     "X-Site": _whep_site},
+                        )
+                        try:
+                            _ureq.urlopen(done, timeout=5).close()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                _time.sleep(3)
+
+        threading.Thread(target=_whep_client_poller, daemon=True,
+                         name="bs-whep-client-poll").start()
 

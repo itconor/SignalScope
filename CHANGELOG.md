@@ -2,6 +2,27 @@
 
 ---
 
+### Brand Screen plugin v1.3.47 — 2026-05-01
+
+**Fix: video brand screen WebRTC via hub↔client SDP relay + suppress animation effects over video**
+
+**Video fix (proper)**: v1.3.46's hub proxy approach failed because the hub is remote and can't reach the LAN SRS bridge. The fundamental problem is that the brand screen page is HTTPS (from hub.signalscope.site) and the SRS bridge is HTTP (on the local LAN) — browsers block direct `fetch()` from HTTPS to HTTP (mixed-content policy). The proxy needs to be something that IS on the local LAN.
+
+New architecture — SDP relay through hub ↔ client:
+1. Brand screen browser POSTs SDP offer to hub (`/api/brandscreen/whep_relay`) over HTTPS → allowed
+2. Hub stores the offer and returns a `relay_id`
+3. Local SignalScope **client** node (new `bs-whep-client-poll` thread) polls hub every 3 s for pending relay tasks
+4. Client receives the SDP offer, POSTs it directly to the local SRS bridge (`http://SRS_IP:1985/rtc/v1/whep/...`) — succeeds because client is on LAN
+5. Client POSTs the SDP answer back to hub (`/api/brandscreen/whep_done/<relay_id>`)
+6. Brand screen browser polls hub for the answer (`/api/brandscreen/whep_poll/<relay_id>`) every 2 s
+7. Browser applies the SDP answer and WebRTC ICE connects **directly browser ↔ SRS over UDP** — no further hub involvement, no HTTP, no mixed-content issue
+
+SDP relay adds ~3–6 s to initial connect (one client poll cycle). After that, video is live WebRTC with no relay latency.
+
+**Effects fix**: when `bg_style == 'video'` the body now has class `bg-video`. CSS rules suppress `#bg-pulse`, `#vignette`, `#beat-flash`, `#lev-bloom`, `#lev-bloom-core`, `.orbit-wrap`, `.pulse-wrap` — all the brand-coloured animation overlays that were tinting the video. Body background set to `#000` (video provides its own background). Logo image glow filter cleared.
+
+---
+
 ### Brand Screen plugin v1.3.46 — 2026-05-01
 
 **Fix: video brand screen shows TV icon — WHEP blocked by mixed-content policy**
