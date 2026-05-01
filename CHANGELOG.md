@@ -2,6 +2,16 @@
 
 ---
 
+### Brand Screen plugin v1.3.62 — 2026-05-01
+
+**Fix: answer fmtp synced to Chrome's offered fmtp to prevent profile-level-id mismatch**
+
+SRS answers with `profile-level-id=42e01f` (constraint byte `0xe0` — three constraint flags simultaneously). Chrome's `ParseProfileLevelId` doesn't recognise `0xe0` as a valid Baseline/CBP constraint pattern and throws "Invalid SDP line" on `a=fmtp:109`. The browser's offer uses `42001f` or similar.
+
+Fix: before `setRemoteDescription`, scan Chrome's `localDescription.sdp` for the video-section `a=fmtp:` entries and replace the answer's fmtp lines with the offer's exact lines (same PT). This guarantees Chrome sees exactly the profile it offered. Fallback: if Chrome offered no fmtp for that PT, replace `42e01f` → `42001f` (standard Constrained Baseline Level 3.1).
+
+---
+
 ### Brand Screen plugin v1.3.61 — 2026-05-01
 
 **Debug: log rtpmap dict and full filtered SDP to console before setRemoteDescription**

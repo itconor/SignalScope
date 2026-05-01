@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.61",
+    "version":  "1.3.62",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3397,9 +3397,30 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
                 }
               }
               if(_stripped.length)console.log('[BS-video] stripped: '+_stripped.join(' | '));
-              console.log('[BS-video] '+_cands.length+' candidates, vidMid='+_firstVidMid+', SDP lines='+_filtered.length);
-              console.log('[BS-video] rtpmap: '+JSON.stringify(_rtpmap));
-              console.log('[BS-video] FILTERED SDP:\\n'+_filtered.join('\\n'));
+              // Sync answer fmtp with Chrome offer fmtp to fix profile-level-id mismatch.
+              // SRS generates 42e01f (constraint byte 0xe0); Chrome may have offered 42001f
+              // or similar — Chrome's ParseProfileLevelId rejects unrecognised constraint bytes.
+              var _ofs_=pc.localDescription.sdp.replace(/\\r?\\n/g,'\\r\\n').split('\\r\\n');
+              var _ofv_=false,_ofFm_={};
+              for(var _i_=0;_i_<_ofs_.length;_i_++){
+                var _ol_=_ofs_[_i_];
+                if(_ol_.indexOf('m=video')===0)_ofv_=true;
+                else if(_ol_.indexOf('m=')===0)_ofv_=false;
+                if(_ofv_&&_ol_.indexOf('a=fmtp:')===0){var _pfp_=_getPT(_ol_);_ofFm_[_pfp_]=_ol_;}
+              }
+              console.log('[BS-video] offer-fmtp: '+JSON.stringify(_ofFm_));
+              _filtered=_filtered.map(function(_fl2_){
+                if(_fl2_.indexOf('a=fmtp:')===0){
+                  var _pfp2_=_getPT(_fl2_);
+                  // Use Chrome's own offered fmtp so the profile exactly matches what Chrome accepted
+                  if(_ofFm_[_pfp2_]){console.log('[BS-video] fmtp:'+_pfp2_+' replaced from offer');return _ofFm_[_pfp2_];}
+                  // Fallback: replace SRS 42e01f with 42001f (standard Constrained Baseline)
+                  return _fl2_.replace('profile-level-id=42e01f','profile-level-id=42001f');
+                }
+                return _fl2_;
+              });
+              console.log('[BS-video] '+_cands.length+' cands, vidMid='+_firstVidMid+', lines='+_filtered.length);
+              console.log('[BS-video] FINAL SDP:\\n'+_filtered.join('\\n'));
               return pc.setRemoteDescription({type:'answer',sdp:_filtered.join('\\r\\n')})
                 .then(function(){
                   console.log('[BS-video] setRemoteDescription OK — injecting '+_cands.length+' ICE candidates');
