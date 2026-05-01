@@ -2,6 +2,14 @@
 
 ---
 
+### Brand Screen plugin v1.3.51 — 2026-05-01
+
+**Diagnostics: poll response shows `claimed` status + hub logs whep_cmd calls**
+
+`bs_whep_poll` now returns `{"pending": true, "claimed": false/true}` when waiting for an answer, instead of bare `{}`. The browser console now logs `claimed by client: true/false` each poll so you can immediately see whether the client poller has picked up the relay task. `bs_whep_cmd` now logs on 403 (site not approved — lists known hub sites) and logs when it dispatches a task to a client site.
+
+---
+
 ### vMix Caller plugin v1.8.1 — 2026-05-01
 
 **Add: Brand Screen WHEP relay client thread**

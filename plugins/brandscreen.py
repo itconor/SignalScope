@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.50",
+    "version":  "1.3.51",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3324,6 +3324,9 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
                 .then(function(){ console.log('[BS-video] setRemoteDescription OK, ICE connecting...'); });
             }
             if(a.error){ console.warn('[BS-video] poll error: '+a.error); }
+            // Log claimed status — shows whether a client has picked up the task
+            if(a.pending) console.log('[BS-video] relay '+(_pollCount<=1?'created':'waiting')+
+              ', claimed by client: '+a.claimed);
             _bvRetryT=setTimeout(_pollAnswer,2000);
           })
           .catch(function(e){ console.warn('[BS-video] poll fetch error:',e); _bvRetryT=setTimeout(_pollAnswer,2000); });
@@ -4507,7 +4510,9 @@ def register(app, ctx):
             return jsonify({"error": "not_found"}), 404
         if r["answer"]:
             return jsonify({"answer": r["answer"]})
-        return jsonify({})
+        # Return claimed status so the browser log can show whether a client
+        # has picked up the relay task (claimed=true) or not yet (claimed=false)
+        return jsonify({"pending": True, "claimed": r["claimed"]})
 
     @app.get("/api/brandscreen/whep_cmd")
     def bs_whep_cmd():
@@ -4517,6 +4522,8 @@ def register(app, ctx):
             return jsonify({}), 400
         sdata = (hub_server._sites or {}).get(site, {})
         if not sdata.get("_approved"):
+            monitor.log(f"[brandscreen] whep_cmd: site '{site}' not approved "
+                        f"(known sites: {list((hub_server._sites or {}).keys())})", "warn")
             return jsonify({}), 403
         now = _time.monotonic()
         with _whep_lock:
@@ -4529,6 +4536,8 @@ def register(app, ctx):
             for relay_id, r in _whep_relays.items():
                 if r["answer"] is None and not r["claimed"]:
                     r["claimed"] = True
+                    monitor.log(f"[brandscreen] whep_cmd: dispatching relay "
+                                f"{relay_id[:8]}… to site '{site}'", "info")
                     return jsonify({"relay_id": relay_id,
                                     "whep_url": r["whep_url"],
                                     "sdp": r["sdp"]})
