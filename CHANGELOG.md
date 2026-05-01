@@ -2,6 +2,22 @@
 
 ---
 
+### vMix Caller plugin v1.7.9 — 2026-05-01
+
+**Fix: SRS WebRTC bridge — port 1985 not exposed, missing CANDIDATE env var**
+
+Two bugs that combined to make `webrtc://` preview URLs fail completely:
+
+1. **Port 1985 not mapped** — SRS serves the WHEP endpoint at `http://HOST:1985/rtc/v1/whep/`, but `-p 1985:1985` was missing from the Docker run args. Any browser hitting that URL got "site can't be reached". Added to `_SRS_DOCKER_FLAGS`.
+
+2. **No CANDIDATE env var** — SRS running in Docker bridge mode doesn't know the host's LAN IP, so it puts the container's internal IP (`172.17.0.x`) in WebRTC ICE candidates. The browser on the LAN can't reach that address, so the video stream never connects even if WHEP negotiation succeeds. `_srs_start()` now calls `_srs_candidate_ip()` (UDP socket trick to detect the primary LAN IP) and passes `-e CANDIDATE=<ip>` automatically.
+
+3. **Old container recreated on Start** — Previously a stopped container was restarted with `docker start` (preserving the old, wrong creation args). Now `_srs_start()` always removes any stopped container before recreating, so port and env changes take effect immediately without a manual `docker rm`.
+
+Updated instructions template to show the corrected manual `docker run` command with both new flags.
+
+---
+
 ### Brand Screen plugin v1.3.41 — 2026-05-01
 
 **Fix: admin page JS crash — non-ASCII ellipsis in `_tvTestDmx` function**

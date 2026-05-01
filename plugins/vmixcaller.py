@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.7.8",
+    "version": "1.7.9",
 }
 
 import os
@@ -847,17 +847,38 @@ def _compute_video_url(cfg: dict, is_hub_node: bool) -> str:
 
 # ── SRS Docker helpers ────────────────────────────────────────────────────────
 
-_SRS_CONTAINER   = "srs"
-_SRS_IMAGE       = "ossrs/srs:5"
-_SRS_RUN_ARGS    = [
+_SRS_CONTAINER    = "srs"
+_SRS_IMAGE        = "ossrs/srs:5"
+# Static docker flags — ports only; CANDIDATE env var is added dynamically
+# at start time so SRS advertises the host's real LAN IP in WebRTC ICE candidates.
+_SRS_DOCKER_FLAGS = [
     "-d", "--name", _SRS_CONTAINER, "--restart", "unless-stopped",
-    "-p", "10080:10080/udp",
-    "-p", "8080:8080",
-    "-p", "1935:1935",
-    "-p", "8000:8000/udp",
-    _SRS_IMAGE,
-    "./objs/srs", "-c", "conf/rtc.conf",
+    "-p", "10080:10080/udp",   # SRT input from vMix
+    "-p", "8080:8080",          # HTTP server (SRS player page, HLS)
+    "-p", "1935:1935",          # RTMP (optional)
+    "-p", "1985:1985",          # HTTP API + WHEP endpoint  ← required for webrtc:// URLs
+    "-p", "8000:8000/udp",     # WebRTC media (SRTP/ICE)
 ]
+_SRS_IMAGE_CMD    = [_SRS_IMAGE, "./objs/srs", "-c", "conf/rtc.conf"]
+
+
+def _srs_candidate_ip() -> str:
+    """Return the primary LAN IPv4 address to pass as SRS CANDIDATE env var.
+
+    Without CANDIDATE, SRS running in Docker bridge mode puts the container's
+    internal IP (172.17.0.x) in WebRTC ICE candidates.  The browser on the LAN
+    cannot reach that address, so video never connects even though WHEP
+    negotiation succeeds.  Passing the real host LAN IP fixes this.
+    """
+    import socket as _sock
+    try:
+        s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 
 def _docker_cmd() -> list | None:
@@ -921,32 +942,36 @@ def _srs_status() -> dict:
 
 
 def _srs_start() -> dict:
-    """Start the SRS container. Pulls image on first run."""
+    """Start the SRS container. Pulls image on first run.
+
+    Always removes any existing stopped container before recreating so that
+    port changes (e.g. adding 1985) and a fresh CANDIDATE IP take effect.
+    Running containers are left alone.
+    """
     docker = _docker_cmd()
     if not docker:
         return {"ok": False, "msg": "docker not found or not accessible — install Docker first"}
     import subprocess as _sp
     try:
-        # Check current state
+        # If already running, nothing to do
         st = _srs_status()
         if st.get("running"):
             return {"ok": True, "msg": "SRS already running"}
 
+        # Remove any existing stopped container so new port/env flags take effect
         if st.get("exists"):
-            # Container exists but stopped — just start it
-            r = _sp.run(docker + ["start", _SRS_CONTAINER],
-                        capture_output=True, text=True, timeout=30)
-            if r.returncode == 0:
-                return {"ok": True, "msg": "SRS started"}
-            # Container is in a bad state — remove and recreate
             _sp.run(docker + ["rm", "-f", _SRS_CONTAINER],
                     capture_output=True, timeout=15)
 
-        # Fresh run — may pull image (can take a minute first time)
-        r = _sp.run(docker + ["run"] + _SRS_RUN_ARGS,
-                    capture_output=True, text=True, timeout=120)
+        # Detect host LAN IP for WebRTC ICE CANDIDATE
+        candidate = _srs_candidate_ip()
+        run_args = _SRS_DOCKER_FLAGS + ["-e", f"CANDIDATE={candidate}"] + _SRS_IMAGE_CMD
+
+        # Fresh run — may pull image on first use (can take ~60 s)
+        r = _sp.run(docker + ["run"] + run_args,
+                    capture_output=True, text=True, timeout=180)
         if r.returncode == 0:
-            return {"ok": True, "msg": "SRS container started"}
+            return {"ok": True, "msg": f"SRS container started (CANDIDATE={candidate})"}
         err = (r.stderr or r.stdout or "unknown error").strip()[:300]
         return {"ok": False, "msg": err}
     except Exception as e:
@@ -2644,8 +2669,10 @@ _HUB_TPL = r"""<!DOCTYPE html>
         <p style="margin-bottom:6px">Run SRS on the same LAN as vMix. If Docker is installed on this machine use the <strong style="color:var(--acc)">SRS Server card below</strong> — it starts the container automatically. Or run manually:</p>
         <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;font-size:11px;color:#7dd3fc;white-space:pre-wrap;margin:6px 0">docker run -d --name srs --restart unless-stopped \
   -p 10080:10080/udp -p 8080:8080 -p 1935:1935 \
-  -p 8000:8000/udp \
+  -p 1985:1985 -p 8000:8000/udp \
+  -e CANDIDATE=&lt;LAN_IP_OF_THIS_MACHINE&gt; \
   ossrs/srs:5 ./objs/srs -c conf/rtc.conf</pre>
+        <p style="font-size:11px;color:var(--wn);margin-top:0;margin-bottom:6px">⚠ Replace <code style="background:#0d1e40;padding:1px 5px;border-radius:3px">CANDIDATE</code> with the LAN IP of the machine running SRS (e.g. <code style="background:#0d1e40;padding:1px 5px;border-radius:3px">192.168.13.2</code>). Without it SRS advertises its Docker-internal IP in WebRTC ICE candidates and video won't connect. The <strong>Start SRS</strong> button below detects the IP automatically.</p>
         <p style="margin-bottom:4px">In vMix → Zoom input → <strong>Output</strong> → enable SRT (<strong>Type: Caller</strong>):</p>
         <ul style="padding-left:16px;margin-bottom:6px">
           <li><strong style="color:var(--tx)">Hostname</strong> — LAN IP of the SRS machine (e.g. <code style="background:#0d1e40;padding:1px 5px;border-radius:3px">192.168.13.2</code>)</li>
