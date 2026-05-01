@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.69",
+    "version":  "1.3.70",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3346,9 +3346,19 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
           }).catch(function(e){console.warn('[BS-video] getStats err:',e);});
         }, 5000);
       }
-      if(_cs==='failed'||_cs==='disconnected'){
+      if(_cs==='failed'){
         _bvCleanup();
-        _bvRetryT=setTimeout(_bvConnect,5000);
+        _bvRetryT=setTimeout(_bvConnect,3000);
+      }
+      if(_cs==='disconnected'){
+        // Transient state — ICE may self-recover. Give it 8 s before forcing reconnect.
+        clearTimeout(_bvRetryT);
+        _bvRetryT=setTimeout(function(){
+          if(pc&&(pc.connectionState==='disconnected'||pc.connectionState==='failed')){
+            _bvCleanup();
+            _bvRetryT=setTimeout(_bvConnect,2000);
+          }
+        },8000);
       }
     };
 
@@ -3967,6 +3977,36 @@ def register(app, ctx):
     # ── SSE ───────────────────────────────────────────────────────────────────
     @app.get("/api/brandscreen/events/studio/<studio_id>")
     def bs_events(studio_id):
+        # On client nodes, proxy hub's SSE stream so the local kiosk page gets
+        # instant brand-assignment updates without CORS issues.
+        # The kiosk page connects to this local endpoint (same origin, no CORS);
+        # this function opens a server-side connection to the hub and pipes it through.
+        _rt_cfg  = monitor.app_cfg
+        _rt_mode = (getattr(getattr(_rt_cfg, "hub", None), "mode", "") or "")
+        _rt_hub  = (getattr(getattr(_rt_cfg, "hub", None), "hub_url", "") or "").rstrip("/")
+        if _rt_mode in ("client", "both") and _rt_hub:
+            token = request.args.get("token", "")
+            qs    = f"?token={token}" if token else ""
+            def _proxy_gen():
+                import urllib.request as _ureq_sse
+                try:
+                    req = _ureq_sse.Request(
+                        f"{_rt_hub}/api/brandscreen/events/studio/{studio_id}{qs}")
+                    with _ureq_sse.urlopen(req, timeout=None) as r:
+                        while True:
+                            line = r.readline()
+                            if not line:
+                                break
+                            yield line.decode("utf-8", errors="replace")
+                except GeneratorExit:
+                    pass
+                except Exception:
+                    yield "data: {}\n\n"
+            return Response(
+                stream_with_context(_proxy_gen()),
+                mimetype="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
         return Response(
             stream_with_context(_sse_stream(studio_id)),
             mimetype="text/event-stream",
@@ -5136,12 +5176,8 @@ def register(app, ctx):
                                 f"'{_whep_hub}/api/brandscreen/logo/")
             html = html.replace('"/api/brandscreen/logo/',
                                 f'"{_whep_hub}/api/brandscreen/logo/')
-            # Auto-reload every 60 s so brand assignment changes propagate without
-            # requiring an SSE connection to the hub (which would need CORS headers).
-            inject = ("<script>"
-                      "setTimeout(function(){window.location.reload();},60000);"
-                      "</script>")
-            html = html.replace("</head>", inject + "</head>", 1)
+            # SSE events now proxy through the local client (bs_events route above),
+            # so brand assignment changes arrive instantly — no auto-reload needed.
             resp = make_response(html)
             resp.headers["Content-Type"] = "text/html; charset=utf-8"
             # Remove hub's security headers that would block local-origin resources

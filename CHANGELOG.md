@@ -2,6 +2,16 @@
 
 ---
 
+### Brand Screen plugin v1.3.70 — 2026-05-01
+
+**Fix: video stuttering + instant brand updates on local kiosk**
+
+**Video stability**: `connectionState=disconnected` is a transient ICE state that can self-recover. Previously the code immediately tore down and reconnected, causing frequent video restarts. Fix: on `disconnected`, wait 8 s to see if ICE recovers before forcing a full reconnect. On `failed`, reconnect immediately.
+
+**Instant brand updates**: The local kiosk page's SSE endpoint (`/api/brandscreen/events/studio/...`) was hitting the local client's `_NOTIFY` dict, which is never updated on client nodes (assignments are hub-managed). The SSE stream was silent, so brand changes only appeared on the 60 s auto-reload. Fix: `bs_events` now detects client mode and proxies the hub's SSE stream server-side — browser connects to local client (same origin, no CORS), local client pipes hub events through. Instant assignment changes, 60 s auto-reload removed.
+
+---
+
 ### Brand Screen plugin v1.3.69 — 2026-05-01
 
 **Local HTTP kiosk route — eliminates hub relay for video brand screens**
