@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.30",
+    "version":  "1.3.31",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -691,9 +691,15 @@ main{max-width:1100px;margin:0 auto;padding:24px 20px}
 .sc-brand-name{font-size:16px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sc-unassigned{font-size:14px;color:var(--mu);font-style:italic}
 .sc-sched-badge{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:700;background:rgba(23,168,255,.12);color:var(--acc);border:1px solid rgba(23,168,255,.3);border-radius:999px;padding:2px 8px;margin-top:4px}
-.sc-switch{padding:12px 18px 16px;border-top:1px solid var(--bor);background:rgba(0,0,0,.12);display:flex;gap:8px;align-items:center}
+.sc-switch{padding:12px 18px 14px;border-top:1px solid var(--bor);background:rgba(0,0,0,.12);display:flex;gap:8px;align-items:center}
 .sc-switch select{flex:1;background:#0d1e40;border:1px solid var(--bor);border-radius:8px;color:var(--tx);padding:7px 10px;font-size:13px;font-family:inherit}.sc-switch select:focus{border-color:var(--acc);outline:none}
 .btn-switch{background:var(--acc);color:#fff;border:none;border-radius:8px;padding:7px 18px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;font-family:inherit}.btn-switch:hover{filter:brightness(1.1)}.btn-switch:disabled{opacity:.45;cursor:default;filter:none}
+.sc-tv{padding:8px 18px 14px;background:rgba(0,0,0,.12);display:flex;align-items:center;gap:10px}
+.sc-tv-label{font-size:11px;font-weight:600;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;flex:1}
+.btn-tv-row{border:none;border-radius:8px;padding:6px 20px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;transition:background .15s,color .15s;white-space:nowrap}
+.btn-tv-row.tv-off{background:#1e3a1e;color:#6ee37a;border:1px solid #2d5c2d}.btn-tv-row.tv-off:hover{filter:brightness(1.15)}
+.btn-tv-row.tv-on{background:#22c55e;color:#fff;border:1px solid #16a34a}.btn-tv-row.tv-on:hover{filter:brightness(1.1)}
+.btn-tv-row:disabled{opacity:.45;cursor:default;filter:none}
 .btn-tv{background:#1e3a1e;color:#6ee37a;border:1px solid #2d5c2d;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;font-family:inherit;transition:background .15s,color .15s}.btn-tv:hover{filter:brightness(1.15)}.btn-tv.tv-active{background:#22c55e;color:#fff;border-color:#16a34a}.btn-tv:disabled{opacity:.45;cursor:default;filter:none}
 /* ── Brands panel ── */
 .brand-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:12px}
@@ -938,12 +944,12 @@ function renderStudios(){
     var opts=_stations.map(function(s){return '<option value="'+s.id+'"'+(sd.station_id===s.id?' selected':'')+'>'+_esc(s.name)+'</option>';}).join('');
     var hasTv=!!(sd.tv_lights&&sd.tv_lights.length)||(sd.tv_ch_white||sd.tv_ch_warm);
     var tvOn=!!(sd._tv_on);
-    var tvBtn=hasTv?('<button class="btn-tv'+(tvOn?' tv-active':'')+'" data-action="tv-toggle" data-sid="'+sd.id+'" title="TV lights">💡 '+(tvOn?'On':'Off')+'</button>'):'';
+    var tvRow=hasTv?('<div class="sc-tv"><span class="sc-tv-label">💡 TV Lights</span><button class="btn-tv-row '+(tvOn?'tv-on':'tv-off')+'" data-action="tv-toggle" data-sid="'+sd.id+'">'+(tvOn?'On':'Off')+'</button></div>'):'';
     return '<div class="studio-card'+(hasSched?' has-sched':'')+'" id="scard-'+sd.id+'">'
       +'<div class="sc-top">'+logoBox+'<div class="sc-info"><div class="sc-studio-name">'+_esc(sd.name)+'</div><div class="sc-brand-name">'+brandName+'</div>'+schedBadge+'</div></div>'
       +'<div class="sc-switch"><select id="sw-'+sd.id+'"><option value="">— choose a brand —</option>'+opts+'</select>'
       +'<button class="btn-switch" data-sdid="'+sd.id+'">Switch now</button>'
-      +tvBtn+'</div></div>';
+      +'</div>'+tvRow+'</div>';
   }).join('');
   el.querySelectorAll('.btn-switch').forEach(function(btn){
     btn.addEventListener('click',function(){
@@ -968,7 +974,6 @@ function _doTvToggle(sid){
       if(d.error){_msg(d.error,false);return;}
       sd._tv_on=newOn;
       renderStudios();
-      if(typeof renderStudios==='function') renderStudios();
       _msg('TV lights '+(newOn?'on':'off')+' ✓',true);
     }).catch(function(){_msg('Connection error.',false);});
 }

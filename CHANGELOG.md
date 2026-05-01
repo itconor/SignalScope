@@ -2,6 +2,16 @@
 
 ---
 
+### Brand Screen plugin v1.3.31 — 2026-05-01
+
+**TV lights layout fix on producer page**
+
+- TV lights on/off control moved out of the brand-switch row into its own dedicated row below it
+- New row uses a full-width label ("💡 TV Lights") and a clearly sized button showing On/Off state
+- Button is green when on, dark-green outline when off — no longer squeezed alongside the brand selector
+
+---
+
 ### Brand Screen plugin v1.3.30 — 2026-05-01
 
 **TV lights: multiple fixtures per studio**
