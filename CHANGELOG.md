@@ -2,6 +2,15 @@
 
 ---
 
+### Brand Screen plugin v1.3.42 — 2026-05-01
+
+**Fix: remove all remaining U+2026 ellipsis characters from JS strings**
+
+- 1.3.41 fixed `'Reading DMX…'` but two more `…` chars in JS string literals remained: `'Fetching…'` (in `_csFetchScenes`) and `'Sending…'` (in `_csPreview`). Any of these causes `SyntaxError: Invalid or unexpected token`, killing the entire admin script block.
+- Replaced every remaining `…` in the file with `...` (ASCII).
+
+---
+
 ### vMix Caller plugin v1.7.9 — 2026-05-01
 
 **Fix: SRS WebRTC bridge — port 1985 not exposed, missing CANDIDATE env var**

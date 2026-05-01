@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.41",
+    "version":  "1.3.42",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -173,7 +173,7 @@ def _new_studio():
         "cueserver_site": "",    # hub site name where CueServer lives
         "cueserver_host": "",    # CueServer hostname / IP on that site's LAN
         "cs_zone_name":   "",    # CueServer zone name (e.g. "Studio1LED") — if set,
-                                 # commands use "ZONE "…" Preset N ON" format instead of "Cue N Go"
+                                 # commands use "ZONE "..." Preset N ON" format instead of "Cue N Go"
         # List of DMX strips: [{name, ch_r, ch_g, ch_b, ch_w}]
         # ch_w = 0 means no white channel (RGB only).
         # ch_w > 0 enables RGBW — white component extracted from the brand colour.
@@ -236,7 +236,7 @@ def _check_schedules():
     studios   = {s["id"]: s for s in cfg.get("studios", [])}
 
     now        = _dt.datetime.now()
-    day_short  = now.strftime("%a").lower()      # "mon", "tue", …
+    day_short  = now.strftime("%a").lower()      # "mon", "tue", ...
     current_hm = now.strftime("%H:%M")           # "14:35"
 
     today_date = now.strftime("%Y-%m-%d")         # "2026-04-30"
@@ -499,9 +499,9 @@ def _parse_cue_list_xml(raw):
     """Best-effort parser for CueServer's /get.cgi?req=csi XML response.
 
     CueServer's schema is not fully documented, so we try every common variant:
-    - <cue num="N" label="…" />
-    - <cue id="N" name="…" />
-    - <cue number="N" title="…" />
+    - <cue num="N" label="..." />
+    - <cue id="N" name="..." />
+    - <cue number="N" title="..." />
     Returns a sorted list of {"num": str, "label": str} dicts.
     """
     cues = []
@@ -837,7 +837,7 @@ input[type=time]:focus,input[type=date]:focus{border-color:var(--acc);outline:no
     <div class="coll-body" id="add-brand-body">
       <div class="field">
         <label>Brand name</label>
-        <input type="text" id="ab-name" placeholder="e.g. Heart Extra, Christmas Special…">
+        <input type="text" id="ab-name" placeholder="e.g. Heart Extra, Christmas Special...">
       </div>
       <div class="field" style="margin-bottom:16px">
         <label>Logo (PNG or SVG recommended)</label>
@@ -862,7 +862,7 @@ input[type=time]:focus,input[type=date]:focus{border-color:var(--acc);outline:no
     <div class="coll-body" id="add-sched-body">
       <div class="field">
         <label>Label (so you remember what this is for)</label>
-        <input type="text" id="sf-name" placeholder="e.g. Friday Night Show, Christmas Branding…">
+        <input type="text" id="sf-name" placeholder="e.g. Friday Night Show, Christmas Branding...">
       </div>
       <div class="field" style="margin-bottom:10px">
         <label>Studio</label>
@@ -1157,7 +1157,7 @@ _loadActive();setInterval(_loadActive,30000);
     var name=document.getElementById('ab-name').value.trim();
     if(!name){_msg('Enter a brand name.',false);return;}
     if(!abFile){_msg('Choose a logo file.',false);return;}
-    var me=this;me.disabled=true;me.textContent='Uploading…';
+    var me=this;me.disabled=true;me.textContent='Uploading...';
     _post('/api/brandscreen/station',{}).then(function(r){return r.json();}).then(function(d){
       if(!d.ok){me.disabled=false;me.textContent='Upload brand';_msg(d.error||'Could not create brand.',false);return;}
       var sid=d.station.id;
@@ -1254,7 +1254,7 @@ _loadActive();setInterval(_loadActive,30000);
     if(isOneOff&&!date){_msg('Pick a date.',false);return;}
     if(!start||!end){_msg('Set start and end times.',false);return;}
     if(start>=end){_msg('End time must be after start time.',false);return;}
-    var me=this;me.disabled=true;me.textContent='Saving…';
+    var me=this;me.disabled=true;me.textContent='Saving...';
 
     function _doSave(stationId){
       _post('/api/brandscreen/schedule',{name:name,studio_id:studio,station_id:stationId,days:days,date:date,start_time:start,end_time:end})
@@ -1269,7 +1269,7 @@ _loadActive();setInterval(_loadActive,30000);
     if(isUpload){
       var oofName=document.getElementById('sf-oof-name').value.trim()||name;
       if(!oofFile){_msg('Choose a logo file for this event.',false);me.disabled=false;me.textContent='Save scheduled change';return;}
-      me.textContent='Uploading logo…';
+      me.textContent='Uploading logo...';
       _post('/api/brandscreen/station',{}).then(function(r){return r.json();}).then(function(d){
         if(!d.ok){me.disabled=false;me.textContent='Save scheduled change';_msg('Could not create brand.',false);return;}
         var sid=d.station.id;
@@ -1278,7 +1278,7 @@ _loadActive();setInterval(_loadActive,30000);
           .then(function(){
             d.station.name=oofName;d.station._has_logo=true;d.station.full_screen_logo=true;
             _stations.push(d.station);renderBrands();_populateSchedSelects();
-            me.textContent='Saving…';_doSave(sid);
+            me.textContent='Saving...';_doSave(sid);
           });
       }).catch(function(){me.disabled=false;me.textContent='Save scheduled change';_msg('Upload failed.',false);});
     } else {
@@ -1759,7 +1759,7 @@ function _studioForm(sd){
     +'<div class="field"><label>Title (large, brand colour)</label>'
     +'<input type="text" id="sd-to-title-'+sd.id+'" placeholder="BREAKING NEWS" maxlength="80"></div>'
     +'<div class="field"><label>Body text</label>'
-    +'<input type="text" id="sd-to-text-'+sd.id+'" placeholder="Your message here…" maxlength="200"></div>'
+    +'<input type="text" id="sd-to-text-'+sd.id+'" placeholder="Your message here..." maxlength="200"></div>'
     +'</div>'
     +'<div style="display:flex;gap:8px">'
     +'<button class="btn bp bs" data-action="takeover-send" data-sid="'+sd.id+'">▶ Send Takeover</button>'
@@ -2217,7 +2217,7 @@ function _csPollResult(studio_id, action, onSuccess, onError, _attempts){
 function _csFetchScenes(studio_id){
   var statusEl=document.getElementById('sd-cs-status-'+studio_id);
   var scenesEl=document.getElementById('sd-cs-scenes-'+studio_id);
-  if(statusEl) statusEl.textContent='Fetching…';
+  if(statusEl) statusEl.textContent='Fetching...';
   _post('/api/brandscreen/cueserver_action/'+studio_id,{action:'poll_scenes'})
     .then(function(r){return r.json();}).then(function(d){
       if(d.error){if(statusEl)statusEl.textContent='Error: '+d.error; return;}
@@ -2246,7 +2246,7 @@ function _csPreview(station_id){
   var colour=ledCol;
   var bri=_csBri(station_id);
   var statusEl=document.getElementById('f-cs-status-'+station_id);
-  if(statusEl)statusEl.textContent='Sending…';
+  if(statusEl)statusEl.textContent='Sending...';
   _post('/api/brandscreen/cueserver_action/'+studio_id,{action:'preview_colour',colour:colour,brightness:bri})
     .then(function(r){return r.json();}).then(function(d){
       if(d.error){if(statusEl)statusEl.textContent='Error: '+d.error; return;}
@@ -3047,7 +3047,7 @@ canvas#cv{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:none}
 <div id="waiting">
   <div style="font-size:40px">🖥️</div>
   <div style="font-size:16px">{{studio_name|e}}</div>
-  <div style="font-size:13px">Waiting for station assignment…</div>
+  <div style="font-size:13px">Waiting for station assignment...</div>
 </div>
 <div id="takeover">
   <div id="takeover-title"></div>
@@ -4239,7 +4239,7 @@ def register(app, ctx):
     def bs_tv_state_report():
         """Client posts real TV light on/off states polled from CueServer DMX.
 
-        Body: {"states": [{"studio_id": "…", "tv_on": true}]}
+        Body: {"states": [{"studio_id": "...", "tv_on": true}]}
         Authenticated via X-Site header.
         """
         site = (request.headers.get("X-Site") or "").strip()
