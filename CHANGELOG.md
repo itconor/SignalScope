@@ -2,6 +2,16 @@
 
 ---
 
+### Brand Screen plugin v1.3.40 — 2026-05-01
+
+**Fix: red LED colours desaturated — remove RGBW decomposition from `_cs_colour_cmd`**
+
+- Previously `_cs_colour_cmd` used RGBW decomposition (`w_raw = min(R,G,B)`) to extract a white component and route it to the W channel. For brand colours this is wrong — even a tiny green/blue component in a "red" hex (e.g. `#ff1010`) would activate the W channel and desaturate the output, making red look pinkish/warm.
+- RGB channels are now mapped directly from the hex colour (scaled by brightness) with no white mixing.
+- The W channel is always explicitly set to `0` when configured, ensuring a previously-lit white channel doesn't bleed into a colour scene.
+
+---
+
 ### Brand Screen plugin v1.3.39 — 2026-05-01
 
 **TV DMX diagnostic — Test DMX read button in studio settings**

@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.39",
+    "version":  "1.3.40",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -374,9 +374,13 @@ def _cs_colour_cmd(hex_colour, strips, brightness=100, fade_secs=1):
 
     Each strip is a dict {name, ch_r, ch_g, ch_b, ch_w} where:
     - ch_r/g/b/w = DMX channel numbers (1–512); 0 = skip that channel
-    - ch_w       = White channel; 0 = not fitted (RGB mode).
-                   When ch_w > 0, RGBW decomposition is applied:
-                   W = min(R,G,B); RGB reduced accordingly.
+    - ch_w       = White channel; always set to 0 for brand colours so that
+                   any previously-lit warm/cool white doesn't bleed into the
+                   colour output.  Set ch_w=0 in the strip config to omit it.
+
+    RGB channels are mapped directly from the hex colour (scaled by brightness).
+    No RGBW decomposition is applied — adding white to a brand colour desaturates
+    it (e.g. pure red looks pinkish).  The W channel is always explicitly zeroed.
 
     `brightness` (0–100, default 100) is the per-brand/station brightness and
     applies uniformly to all strips.  It is stored on the station, not the strip.
@@ -389,26 +393,20 @@ def _cs_colour_cmd(hex_colour, strips, brightness=100, fade_secs=1):
     r, g, b = _hex_rgb(hex_colour)
     scale   = max(0.0, min(100.0, float(brightness))) / 100.0
     parts   = []
+
+    def _pct(v):
+        return round(v / 255 * 100 * scale)
+
     for strip in strips:
         ch_r  = int(strip.get("ch_r") or 0)
         ch_g  = int(strip.get("ch_g") or 0)
         ch_b  = int(strip.get("ch_b") or 0)
         ch_w  = int(strip.get("ch_w") or 0)
 
-        if ch_w:
-            # RGBW: extract white component
-            w_raw = min(r, g, b)
-            r_c, g_c, b_c = r - w_raw, g - w_raw, b - w_raw
-        else:
-            r_c, g_c, b_c, w_raw = r, g, b, 0
-
-        def _pct(v):
-            return round(v / 255 * 100 * scale)
-
-        if ch_r: parts.append(f"Channel {ch_r} At {_pct(r_c)}")
-        if ch_g: parts.append(f"Channel {ch_g} At {_pct(g_c)}")
-        if ch_b: parts.append(f"Channel {ch_b} At {_pct(b_c)}")
-        if ch_w: parts.append(f"Channel {ch_w} At {_pct(w_raw)}")
+        if ch_r: parts.append(f"Channel {ch_r} At {_pct(r)}")
+        if ch_g: parts.append(f"Channel {ch_g} At {_pct(g)}")
+        if ch_b: parts.append(f"Channel {ch_b} At {_pct(b)}")
+        if ch_w: parts.append(f"Channel {ch_w} At 0")
 
     if not parts:
         return ""
