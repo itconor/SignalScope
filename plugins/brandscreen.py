@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.45",
+    "version":  "1.3.46",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3243,9 +3243,14 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
         });
       })
       .then(function(){
-        return fetch(_videoUrl,{
+        // Route WHEP through the vmixcaller proxy — avoids mixed-content block
+        // (brand screen page is HTTPS; SRS bridge is HTTP on the local LAN).
+        // Same pattern as the vmixcaller presenter view (/api/vmixcaller/whep_proxy).
+        var _whepTarget='/api/vmixcaller/whep_proxy?url='+encodeURIComponent(_videoUrl);
+        return fetch(_whepTarget,{
           method:'POST',
           headers:{'Content-Type':'application/sdp'},
+          credentials:'same-origin',
           body:pc.localDescription.sdp
         });
       })

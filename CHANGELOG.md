@@ -2,6 +2,16 @@
 
 ---
 
+### Brand Screen plugin v1.3.46 — 2026-05-01
+
+**Fix: video brand screen shows TV icon — WHEP blocked by mixed-content policy**
+
+Root cause: the brand screen page is served over HTTPS from the hub. The SRS bridge WHEP endpoint is an HTTP URL on the local LAN (e.g. `http://192.168.1.x:1985/rtc/v1/whep/...`). Browsers block `fetch()` calls from an HTTPS page to an HTTP target (mixed-content policy), so the `POST` with the SDP offer never reached SRS. The WebRTC connection never established, `ontrack` never fired, the `<video>` element stayed hidden, and the TV icon placeholder remained visible.
+
+Fix: route the WHEP `POST` through `/api/vmixcaller/whep_proxy?url=<encoded>` — the same server-side proxy the vmixcaller presenter view uses for its working WebRTC preview. The browser now sends the SDP offer to the hub over HTTPS; the hub forwards it to the LAN bridge over HTTP. Same single-line pattern as vmixcaller line 1731.
+
+---
+
 ### Brand Screen plugin v1.3.45 — 2026-05-01
 
 **Fix: macOS colour picker "Maraschino" top-left red is #ff2600 (15% green) — add hex inputs for exact colour entry**
