@@ -2,6 +2,16 @@
 
 ---
 
+### Brand Screen plugin v1.3.49 — 2026-05-01
+
+**Debug + fix: WHEP relay client poller silent failures + "both" mode not starting**
+
+- Fixed: client poller only started when `mode == "client"`. Nodes in `"both"` mode (connected to a remote hub AND acting as local hub) never started the poller. Fixed to `mode in ("client", "both")`.
+- Fixed: all exceptions in the client poller were silently swallowed (`except Exception: pass`). Added `monitor.log()` at every step: poller start, relay task received, SRS forward result, done POST result, poll failure. Failures now appear in the SignalScope log.
+- Added detailed `console.log` to `_bvConnect()` in the screen JS at every stage (ICE gathering, relay POST HTTP status, relay_id received, each poll attempt, SDP answer received, setRemoteDescription result, connection state changes). Open browser DevTools console on the brand screen to see exactly where the flow stops.
+
+---
+
 ### Brand Screen plugin v1.3.48 — 2026-05-01
 
 **Fix: WHEP SDP relay broken on kiosk screens — auth blocked before SDP ever reached hub**

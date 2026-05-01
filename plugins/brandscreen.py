@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.48",
+    "version":  "1.3.49",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3239,14 +3239,18 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
     if(_bvPc){ try{_bvPc.close();}catch(e){} _bvPc=null; }
   }
 
+  console.log('[BS-video] bg_style=video, videoUrl='+_videoUrl+', token='+(!!_kioskToken));
+
   function _bvConnect(){
     _bvCleanup();
+    console.log('[BS-video] _bvConnect() starting');
     var pc=new RTCPeerConnection({iceServers:[]});
     // Receive video + audio only — we are the egress consumer
     pc.addTransceiver('video',{direction:'recvonly'});
     pc.addTransceiver('audio',{direction:'recvonly'});
 
     pc.ontrack=function(evt){
+      console.log('[BS-video] ontrack fired, streams='+evt.streams.length);
       if(_bvEl && evt.streams && evt.streams[0]){
         _bvEl.srcObject=evt.streams[0];
         _bvEl.style.display='block';
@@ -3255,6 +3259,7 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
     };
 
     pc.onconnectionstatechange=function(){
+      console.log('[BS-video] connectionState='+pc.connectionState);
       if(pc.connectionState==='failed'||pc.connectionState==='disconnected'){
         _bvCleanup();
         _bvRetryT=setTimeout(_bvConnect,5000);
@@ -3274,6 +3279,7 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
         });
       })
       .then(function(){
+        console.log('[BS-video] ICE gathered, posting SDP to hub relay. whep_url='+_videoUrl);
         // Post SDP offer to hub relay — hub queues it for the local client node
         // which forwards it to the LAN SRS bridge (HTTP) and posts the answer back.
         // This sidesteps the HTTPS→HTTP mixed-content block on the WHEP signaling.
@@ -3288,35 +3294,44 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
         });
       })
       .then(function(resp){
+        console.log('[BS-video] whep_relay HTTP status='+resp.status);
         if(!resp.ok) throw new Error('WHEP relay HTTP '+resp.status);
         return resp.json();
       })
       .then(function(d){
         if(d.error) throw new Error('WHEP relay: '+d.error);
+        console.log('[BS-video] relay_id='+d.relay_id+', polling for SDP answer...');
         _bvPc=pc;
         var _rid=d.relay_id;
         // Poll for the SDP answer — client node forwards to SRS and posts it back
         var _pollCount=0;
         function _pollAnswer(){
           if(_pollCount++>25){
-            console.warn('[BrandScreen] WHEP relay timeout — no answer after 50 s');
+            console.warn('[BS-video] WHEP relay timeout — no answer after 50 s, retrying connect');
             _bvRetryT=setTimeout(_bvConnect,5000);
             return;
           }
+          console.log('[BS-video] poll #'+_pollCount+' for relay_id='+_rid);
           fetch(_tk('/api/brandscreen/whep_poll/'+_rid),{credentials:'same-origin'})
-          .then(function(r){return r.json();})
+          .then(function(r){
+            console.log('[BS-video] poll HTTP status='+r.status);
+            return r.json();
+          })
           .then(function(a){
             if(a.answer){
-              return pc.setRemoteDescription({type:'answer',sdp:a.answer});
+              console.log('[BS-video] SDP answer received! Setting remote description...');
+              return pc.setRemoteDescription({type:'answer',sdp:a.answer})
+                .then(function(){ console.log('[BS-video] setRemoteDescription OK, ICE connecting...'); });
             }
+            if(a.error){ console.warn('[BS-video] poll error: '+a.error); }
             _bvRetryT=setTimeout(_pollAnswer,2000);
           })
-          .catch(function(){ _bvRetryT=setTimeout(_pollAnswer,2000); });
+          .catch(function(e){ console.warn('[BS-video] poll fetch error:',e); _bvRetryT=setTimeout(_pollAnswer,2000); });
         }
         _pollAnswer();
       })
       .catch(function(err){
-        console.warn('[BrandScreen] WHEP relay failed:',err);
+        console.warn('[BS-video] WHEP relay failed:',err);
         _bvFailed=true;
         _bvRetryT=setTimeout(_bvConnect,5000);
       });
@@ -4927,20 +4942,27 @@ def register(app, ctx):
     _whep_hub  = (getattr(getattr(_whep_cfg, "hub", None), "hub_url", "") or "").rstrip("/")
     _whep_site = (getattr(getattr(_whep_cfg, "hub", None), "site_name", "") or "").strip()
 
-    if _whep_mode == "client" and _whep_hub and _whep_site:
+    # Poller runs on any node connected to a remote hub (client or both mode)
+    if _whep_mode in ("client", "both") and _whep_hub and _whep_site:
+        monitor.log(f"[brandscreen] WHEP relay client poller starting "
+                    f"(mode={_whep_mode}, hub={_whep_hub}, site={_whep_site})", "info")
         def _whep_client_poller():
             import urllib.request as _ureq
             _cmd_url = f"{_whep_hub}/api/brandscreen/whep_cmd"
+            _fail_logged = False
             while True:
                 try:
                     req = _ureq.Request(_cmd_url,
                                         headers={"X-Site": _whep_site})
                     with _ureq.urlopen(req, timeout=6) as r:
                         d = json.loads(r.read())
+                    _fail_logged = False   # hub reachable — reset failure flag
                     relay_id = d.get("relay_id")
                     whep_url  = d.get("whep_url", "")
                     sdp_offer = d.get("sdp", "")
                     if relay_id and whep_url and sdp_offer:
+                        monitor.log(f"[brandscreen] WHEP relay task {relay_id[:8]}… "
+                                    f"→ forwarding SDP to {whep_url}", "info")
                         # Forward SDP offer to local SRS bridge
                         try:
                             fwd = _ureq.Request(
@@ -4951,8 +4973,11 @@ def register(app, ctx):
                             )
                             with _ureq.urlopen(fwd, timeout=10) as resp:
                                 answer = resp.read().decode()
+                            monitor.log(f"[brandscreen] WHEP SRS answered "
+                                        f"({len(answer)} bytes) for relay {relay_id[:8]}…", "info")
                         except Exception as exc:
-                            monitor.log(f"[brandscreen] WHEP forward failed: {exc}", "warn")
+                            monitor.log(f"[brandscreen] WHEP SRS forward FAILED "
+                                        f"({whep_url}): {exc}", "warn")
                             answer = ""
                         # Post answer (or empty on failure) back to hub
                         done = _ureq.Request(
@@ -4964,10 +4989,13 @@ def register(app, ctx):
                         )
                         try:
                             _ureq.urlopen(done, timeout=5).close()
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                        except Exception as exc:
+                            monitor.log(f"[brandscreen] WHEP done POST failed: {exc}", "warn")
+                except Exception as exc:
+                    if not _fail_logged:
+                        monitor.log(f"[brandscreen] WHEP relay poll failed "
+                                    f"({_cmd_url}): {exc}", "warn")
+                        _fail_logged = True
                 _time.sleep(3)
 
         threading.Thread(target=_whep_client_poller, daemon=True,
