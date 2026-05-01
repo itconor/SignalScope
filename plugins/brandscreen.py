@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.56",
+    "version":  "1.3.57",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3339,25 +3339,39 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
               // Session-level a= attrs Chrome accepts (all others must be media-level)
               var _sOK=['a=group:','a=ice-lite','a=fingerprint:','a=setup:','a=msid-semantic:','a=extmap-allow-mixed'];
               function _sessOk(l){for(var _k=0;_k<_sOK.length;_k++)if(l.indexOf(_sOK[_k])===0)return true;return false;}
-              // Second pass: collect candidates, strip bad session-level attrs, build clean SDP
-              var _cands=[],_curMid=null,_curMIdx=-1,_filtered=[],_inMedia=false,_stripped=[];
+              // Second pass: collect candidates, strip bad attrs, build clean SDP
+              var _cands=[],_curMid=null,_curMIdx=-1,_filtered=[],_inMedia=false,_stripped=[],_mPTs=[];
               for(var _li=0;_li<_lines.length;_li++){
                 var _ln=_lines[_li];
-                if(_ln.indexOf('m=')===0){_curMIdx++;_curMid=null;_inMedia=true;}
+                if(_ln.indexOf('m=')===0){
+                  _curMIdx++;_curMid=null;_inMedia=true;
+                  // Extract negotiated payload types from m= line
+                  // e.g. "m=video 8000 UDP/TLS/RTP/SAVPF 100 102" → ['100','102']
+                  _mPTs=_ln.split(' ').slice(3);
+                }
                 if(_ln.indexOf('a=mid:')===0)_curMid=_ln.slice(6).trim();
                 if(_ln.indexOf('a=candidate:')===0){
                   _cands.push({candidate:_ln.slice(2),
                                sdpMid:(_curMIdx<0?_firstMid:(_curMid||_firstMid)),
                                sdpMLineIndex:Math.max(0,_curMIdx)});
                 } else if(_ln.indexOf('a=end-of-candidates')===0||_ln.indexOf('a=ssrc:')===0){
-                  _stripped.push(_ln.slice(0,40));
+                  _stripped.push(_ln.slice(0,48));
                 } else if(!_inMedia&&_ln.indexOf('a=')===0&&!_sessOk(_ln)){
-                  _stripped.push(_ln.slice(0,40)); // session-level attr not in whitelist
+                  _stripped.push(_ln.slice(0,48)); // session-level attr not in whitelist
+                } else if(_inMedia&&_ln.indexOf('a=rtcp-fb:')===0){
+                  // Strip a=rtcp-fb for payload types not negotiated in this m= section.
+                  // SRS includes audio PT feedback (e.g. 111/opus) in the video section.
+                  var _fbPT=_ln.slice(10).split(' ')[0];
+                  if(_mPTs.indexOf(_fbPT)<0){
+                    _stripped.push(_ln.slice(0,48));
+                  } else {
+                    _filtered.push(_ln);
+                  }
                 } else {
                   _filtered.push(_ln);
                 }
               }
-              if(_stripped.length)console.log('[BS-video] stripped session-level: '+_stripped.join(' | '));
+              if(_stripped.length)console.log('[BS-video] stripped: '+_stripped.join(' | '));
               console.log('[BS-video] '+_cands.length+' candidates, mid='+_firstMid+', SDP lines='+_filtered.length);
               return pc.setRemoteDescription({type:'answer',sdp:_filtered.join('\\r\\n')})
                 .then(function(){

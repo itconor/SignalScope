@@ -2,6 +2,14 @@
 
 ---
 
+### Brand Screen plugin v1.3.57 — 2026-05-01
+
+**Fix: a=rtcp-fb for non-negotiated PT inside video m= section**
+
+`a=rtcp-fb:111 transport-cc` (PT 111 = Opus audio) appeared inside the video `m=` section of the SRS answer. Chrome rejects feedback lines for payload types not listed in the `m=` line. The filter now parses the negotiated PTs from each `m=` line and strips any `a=rtcp-fb:` line whose PT is not in that list. Valid feedback lines (e.g. `a=rtcp-fb:100 nack`) are kept.
+
+---
+
 ### Brand Screen plugin v1.3.56 — 2026-05-01
 
 **Fix: SRS SDP whack-a-mole — whitelist-based session-level attribute filter**
