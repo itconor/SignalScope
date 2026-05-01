@@ -2,6 +2,26 @@
 
 ---
 
+### Brand Screen plugin v1.3.36 — 2026-05-01
+
+**Restore working TV lights — remove CueServer polling**
+
+- Removed the background CueServer DMX polling threads added in v1.3.32–1.3.34. They were hitting `/get.cgi?req=out` on CueServer concurrently with command execution and breaking it
+- TV on/off commands use `At 255` for both channels (cold white, full brightness) and `At 0` off — this was always correct
+- UI state still updates from button clicks; the hub endpoints added in v1.3.32 are retained for future use
+
+---
+
+### Brand Screen plugin v1.3.35 — 2026-05-01
+
+**Fix TV lights broken by invalid At 255 — CueScript uses 0–100 percent**
+
+- `_cs_colour_cmd` (which has always worked) converts 0–255 hex values to 0–100 via `_pct()` before sending to CueServer — CueScript `At` takes a percentage not a raw DMX value
+- v1.3.33/1.3.34 used `At 255` which CueServer rejected, causing the command to have no effect
+- Reverted to `At 100` (100% = full on = DMX 255) for both channels; both warm-white and white go to 100% on / 0% off giving cold white at full brightness
+
+---
+
 ### Brand Screen plugin v1.3.34 — 2026-05-01
 
 **Fix TV light channels: both at 255 for on, 0 for off; fix polling blocking commands**
