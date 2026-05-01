@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.27",
+    "version":  "1.3.28",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -345,6 +345,13 @@ def _cueserver_trigger(studio, station):
     if not cs_cmd:
         # Generate live DMX colour command from LED colour (accent_colour) or brand colour + brightness
         strips = studio.get("cs_strips") or []
+        if not strips:
+            # Legacy single-strip migration: cs_dmx_r/g/b fields from v1.3.19 and earlier
+            r_ch = int(studio.get("cs_dmx_r") or 0)
+            g_ch = int(studio.get("cs_dmx_g") or 0)
+            b_ch = int(studio.get("cs_dmx_b") or 0)
+            if r_ch or g_ch or b_ch:
+                strips = [{"name": "Strip 1", "ch_r": r_ch, "ch_g": g_ch, "ch_b": b_ch, "ch_w": 0}]
         if strips:
             led_col = (station.get("accent_colour") or "").strip() or station.get("brand_colour", "#17a8ff")
             bri     = int(station.get("cs_brightness") or 100)
@@ -3656,6 +3663,7 @@ def register(app, ctx):
         if not s:
             return jsonify({"error": "Studio not found"}), 404
         data = request.get_json(force=True) or {}
+        old_station_id = s.get("station_id", "")
         for k in ("name", "station_id", "sb_studio_id",
                   "cueserver_site", "cueserver_host", "cs_zone_name"):
             if k in data:
@@ -3682,6 +3690,10 @@ def register(app, ctx):
             s["cs_strips"] = clean
         _cfg_save(cfg)
         _notify_studio(studio_id)
+        # CueServer — trigger LED scene if the station assignment changed
+        new_station_id = s.get("station_id", "")
+        if new_station_id != old_station_id:
+            _cueserver_trigger(s, _get_station(cfg, new_station_id) if new_station_id else None)
         return jsonify({"ok": True, "studio": s})
 
     @app.delete("/api/brandscreen/studio/<studio_id>")

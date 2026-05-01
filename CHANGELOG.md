@@ -2,6 +2,18 @@
 
 ---
 
+### Brand Screen plugin v1.3.28 — 2026-05-01
+
+**CueServer LEDs not firing on brand change via studio Save button (fixed)**
+
+Two bugs prevented CueServer from triggering when the brand changed:
+
+1. **`bs_studio_save` never called `_cueserver_trigger`** — saving a studio via the edit form (which includes the station/brand dropdown) saved the new assignment and notified SSE clients but silently skipped the CueServer LED command. Only the "Switch now" button on the studio card (`bs_assign`) called `_cueserver_trigger`. Both paths now trigger LEDs when the assignment changes.
+
+2. **`_cueserver_trigger` missing legacy fallback** — `bs_cueserver_action` (used by Preview) had a migration path for studios with old-style `cs_dmx_r/g/b` channel fields (before the multi-strip UI). `_cueserver_trigger` did not, so studios with the old format got an empty command and returned silently. Both functions now share the same fallback.
+
+---
+
 ### vMix Caller plugin v1.7.8 — 2026-05-01
 
 **Report instances to hub for cross-plugin use**
