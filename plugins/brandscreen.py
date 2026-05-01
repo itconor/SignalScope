@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.70",
+    "version":  "1.3.71",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3376,8 +3376,9 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
       })
       .then(function(){
         if(_bvDirect){
-          // Direct WHEP: page is served over HTTP so can POST to HTTP SRS without
-          // mixed-content block. Bypass hub relay entirely — same path as vmixcaller.
+          // Direct WHEP: page is HTTP → can POST to HTTP SRS with no mixed-content block.
+          // Entire chain resolves here — the outer .then() chain must NOT continue
+          // into hub-relay processing (resp.status etc.) after this branch.
           console.log('[BS-video] direct WHEP POST → '+_videoUrl);
           return fetch(_videoUrl,{
             method:'POST',
@@ -3389,54 +3390,50 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
           }).then(function(sdp){ _bvPc=pc; return _bvApplyAnswer(pc,sdp); });
         }
         // Hub relay path (HTTPS page — mixed-content blocks direct SRS fetch).
-        // Browser POSTs to hub; client node forwards to LAN SRS; hub returns answer.
-        // ICE media still flows DIRECTLY browser↔SRS over UDP (not through hub).
+        // The ENTIRE relay chain is nested here so the direct path above never
+        // falls through into resp.status / polling code.
         console.log('[BS-video] ICE gathered, posting SDP to hub relay. whep_url='+_videoUrl);
         return fetch(_tk('/api/brandscreen/whep_relay'),{
           method:'POST',
           headers:{'Content-Type':'application/json'},
           credentials:'same-origin',
           body:JSON.stringify({whep_url:_videoUrl,sdp:pc.localDescription.sdp})
+        }).then(function(resp){
+          console.log('[BS-video] whep_relay HTTP status='+resp.status);
+          if(!resp.ok) throw new Error('WHEP relay HTTP '+resp.status);
+          return resp.json();
+        }).then(function(d){
+          if(d.error) throw new Error('WHEP relay: '+d.error);
+          console.log('[BS-video] relay_id='+d.relay_id+', polling for SDP answer...');
+          _bvPc=pc;
+          var _rid=d.relay_id;
+          var _pollCount=0;
+          function _pollAnswer(){
+            if(_pollCount++>25){
+              console.warn('[BS-video] WHEP relay timeout — no answer after 50 s, retrying connect');
+              _bvRetryT=setTimeout(_bvConnect,5000);
+              return;
+            }
+            console.log('[BS-video] poll #'+_pollCount+' for relay_id='+_rid);
+            fetch(_tk('/api/brandscreen/whep_poll/'+_rid),{credentials:'same-origin'})
+            .then(function(r){
+              console.log('[BS-video] poll HTTP status='+r.status);
+              return r.json();
+            })
+            .then(function(a){
+              if(a.answer){ return _bvApplyAnswer(pc,a.answer); }
+              if(a.error){ console.warn('[BS-video] poll error: '+a.error); }
+              if(a.pending) console.log('[BS-video] relay '+(_pollCount<=1?'created':'waiting')+
+                ', claimed by client: '+a.claimed);
+              _bvRetryT=setTimeout(_pollAnswer,2000);
+            })
+            .catch(function(e){ console.warn('[BS-video] poll fetch error:',e); _bvRetryT=setTimeout(_pollAnswer,2000); });
+          }
+          _pollAnswer();
         });
       })
-      .then(function(resp){
-        console.log('[BS-video] whep_relay HTTP status='+resp.status);
-        if(!resp.ok) throw new Error('WHEP relay HTTP '+resp.status);
-        return resp.json();
-      })
-      .then(function(d){
-        if(d.error) throw new Error('WHEP relay: '+d.error);
-        console.log('[BS-video] relay_id='+d.relay_id+', polling for SDP answer...');
-        _bvPc=pc;
-        var _rid=d.relay_id;
-        // Poll for the SDP answer — client node forwards to SRS and posts it back
-        var _pollCount=0;
-        function _pollAnswer(){
-          if(_pollCount++>25){
-            console.warn('[BS-video] WHEP relay timeout — no answer after 50 s, retrying connect');
-            _bvRetryT=setTimeout(_bvConnect,5000);
-            return;
-          }
-          console.log('[BS-video] poll #'+_pollCount+' for relay_id='+_rid);
-          fetch(_tk('/api/brandscreen/whep_poll/'+_rid),{credentials:'same-origin'})
-          .then(function(r){
-            console.log('[BS-video] poll HTTP status='+r.status);
-            return r.json();
-          })
-          .then(function(a){
-            if(a.answer){ return _bvApplyAnswer(pc,a.answer); }
-            if(a.error){ console.warn('[BS-video] poll error: '+a.error); }
-            // Log claimed status — shows whether a client has picked up the task
-            if(a.pending) console.log('[BS-video] relay '+(_pollCount<=1?'created':'waiting')+
-              ', claimed by client: '+a.claimed);
-            _bvRetryT=setTimeout(_pollAnswer,2000);
-          })
-          .catch(function(e){ console.warn('[BS-video] poll fetch error:',e); _bvRetryT=setTimeout(_pollAnswer,2000); });
-        }
-        _pollAnswer();
-      })
       .catch(function(err){
-        console.warn('[BS-video] WHEP relay failed:',err);
+        console.warn('[BS-video] WHEP connect failed:',err);
         _bvFailed=true;
         _bvRetryT=setTimeout(_bvConnect,5000);
       });
@@ -4016,6 +4013,21 @@ def register(app, ctx):
     # ── Now-playing data (public) ─────────────────────────────────────────────
     @app.get("/api/brandscreen/data/<station_id>")
     def bs_data(station_id):
+        # On client nodes, proxy to hub so the local kiosk page gets correct
+        # now-playing data (station configs live on the hub, not the client).
+        _rt_cfg  = monitor.app_cfg
+        _rt_mode = (getattr(getattr(_rt_cfg, "hub", None), "mode", "") or "")
+        _rt_hub  = (getattr(getattr(_rt_cfg, "hub", None), "hub_url", "") or "").rstrip("/")
+        if _rt_mode in ("client", "both") and _rt_hub:
+            import urllib.request as _ureq_d
+            token = request.args.get("token", "")
+            qs    = f"?token={token}" if token else ""
+            try:
+                req = _ureq_d.Request(f"{_rt_hub}/api/brandscreen/data/{station_id}{qs}")
+                with _ureq_d.urlopen(req, timeout=5) as r:
+                    return Response(r.read(), content_type="application/json")
+            except Exception as exc:
+                return jsonify({"error": str(exc)}), 503
         cfg = _cfg_load()
         s   = _get_station(cfg, station_id)
         if not s:

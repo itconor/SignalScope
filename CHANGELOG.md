@@ -2,6 +2,18 @@
 
 ---
 
+### Brand Screen plugin v1.3.71 — 2026-05-01
+
+**Fix: direct WHEP path causing instant reconnect loop**
+
+Root cause: in `_bvConnect`, the direct (`_bvDirect=true`) and hub-relay paths were both chained to outer `.then(function(resp){resp.status...})` and `.then(function(d){...polling...})` blocks. The direct path resolves with `undefined` (from `_bvApplyAnswer`), so the next outer `.then(resp)` received `undefined` → `TypeError: Cannot read properties of undefined (reading 'status')` → `.catch` fired → `_bvConnect` called again → infinite reconnect loop.
+
+Fix: the entire hub-relay response chain (`.then(resp)` + `.then(d)` + `_pollAnswer`) is now nested **inside** the hub-relay branch, not as outer `.then()` links. The direct path resolves cleanly and nothing else runs after it.
+
+Also: `bs_data` now proxies to hub on client nodes (was returning 404 for station IDs that only exist on hub), matching the `bs_events` proxy pattern.
+
+---
+
 ### Brand Screen plugin v1.3.70 — 2026-05-01
 
 **Fix: video stuttering + instant brand updates on local kiosk**
