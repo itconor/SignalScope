@@ -2,6 +2,22 @@
 
 ---
 
+### Brand Screen plugin v1.3.54 — 2026-05-01
+
+**Fix: SRS WHEP answer rejected by Chrome — session-level a=candidate**
+
+SRS WHEP places `a=candidate` lines at the SDP session level (before any `m=` section). Chrome's RTCPeerConnection parser only accepts `a=candidate` as a media-level attribute and rejects session-level ones with `Failed to parse SessionDescription … Invalid SDP line`.
+
+Fix: before calling `setRemoteDescription`, the browser now:
+1. Normalises CRLF line endings (`\n` → `\r\n`)
+2. Strips all `a=candidate` and `a=end-of-candidates` lines from the SDP body
+3. Applies the cleaned SDP via `setRemoteDescription`
+4. Injects each candidate via `pc.addIceCandidate()` with the correct `sdpMid` / `sdpMLineIndex`
+
+Session-level candidates (before the first `m=` line) are mapped to the first media section using its `a=mid:` value. Media-level candidates use their own section's mid. This approach is robust against both placement styles and against SRS version differences.
+
+---
+
 ### vMix Caller plugin v1.8.2 + Brand Screen plugin v1.3.53 — 2026-05-01
 
 **Fix: WHEP relay thread never starting when site_name is empty at plugin load**

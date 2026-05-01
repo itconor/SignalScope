@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.53",
+    "version":  "1.3.54",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3320,8 +3320,42 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
           .then(function(a){
             if(a.answer){
               console.log('[BS-video] SDP answer received! Setting remote description...');
-              return pc.setRemoteDescription({type:'answer',sdp:a.answer})
-                .then(function(){ console.log('[BS-video] setRemoteDescription OK, ICE connecting...'); });
+              // Normalise CRLF and strip a=candidate / a=end-of-candidates lines.
+              // SRS WHEP places candidates at session level (before m=); Chrome
+              // rejects session-level candidates as "Invalid SDP line".
+              // We inject them via addIceCandidate() instead, which works regardless
+              // of whether SRS puts them at session or media level.
+              var _sdp=a.answer.replace(/\\r?\\n/g,'\\r\\n');
+              var _lines=_sdp.split('\\r\\n');
+              // First pass: find mid of the first m= section
+              var _firstMid='0',_inM=false;
+              for(var _fi=0;_fi<_lines.length;_fi++){
+                if(_lines[_fi].startsWith('m='))_inM=true;
+                if(_inM&&_lines[_fi].startsWith('a=mid:')){_firstMid=_lines[_fi].slice(6).trim();break;}
+              }
+              // Second pass: collect candidates, build cleaned SDP
+              var _cands=[],_curMid=null,_curMIdx=-1,_filtered=[];
+              for(var _li=0;_li<_lines.length;_li++){
+                var _ln=_lines[_li];
+                if(_ln.startsWith('m='))_curMIdx++;
+                if(_ln.startsWith('a=mid:'))_curMid=_ln.slice(6).trim();
+                if(_ln.startsWith('a=candidate:')){
+                  _cands.push({candidate:_ln.slice(2),
+                               sdpMid:(_curMIdx<0?_firstMid:(_curMid||_firstMid)),
+                               sdpMLineIndex:Math.max(0,_curMIdx)});
+                } else if(!_ln.startsWith('a=end-of-candidates')){
+                  _filtered.push(_ln);
+                }
+              }
+              console.log('[BS-video] stripped '+_cands.length+' candidates from SDP (firstMid='+_firstMid+')');
+              return pc.setRemoteDescription({type:'answer',sdp:_filtered.join('\\r\\n')})
+                .then(function(){
+                  console.log('[BS-video] setRemoteDescription OK — injecting '+_cands.length+' ICE candidates');
+                  _cands.forEach(function(e){
+                    pc.addIceCandidate(e)
+                      .catch(function(err){console.warn('[BS-video] addIceCandidate err:',err,e.candidate);});
+                  });
+                });
             }
             if(a.error){ console.warn('[BS-video] poll error: '+a.error); }
             // Log claimed status — shows whether a client has picked up the task
