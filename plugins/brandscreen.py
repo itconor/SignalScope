@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.42",
+    "version":  "1.3.43",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -2281,7 +2281,7 @@ function _tvTestDmx(studio_id){
           } else {
             lines.push('TV light channels: none configured or not found in response');
           }
-          resultEl.textContent=lines.join('\n');
+          resultEl.textContent=lines.join('\\n');
           resultEl.style.display='block';
         },
         function(err){if(statusEl)statusEl.textContent='Error: '+err;}

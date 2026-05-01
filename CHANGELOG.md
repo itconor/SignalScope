@@ -2,6 +2,23 @@
 
 ---
 
+### Brand Screen plugin v1.3.43 — 2026-05-01
+
+**Fix: admin page SyntaxError — literal newline injected into JS string via Python escape**
+
+Root cause: `_ADMIN_TPL` is a Python triple-quoted `"""..."""` string. Inside it, `'\n'` (single-quote, backslash-n, single-quote) is processed by Python as an escape sequence, inserting a real U+000A newline character into the template string. The rendered HTML therefore contained:
+
+```javascript
+resultEl.textContent=lines.join('
+');
+```
+
+A JS single-quoted string literal cannot span lines — V8 reports `SyntaxError: Invalid or unexpected token` and aborts the entire script block, leaving the admin page completely non-functional (no studios, no stations, no buttons).
+
+Fix: doubled the backslash to `'\\n'` in the Python source. Python now produces a literal `\` + `n` in the template, which renders as the valid JS escape sequence `'\n'` in the browser.
+
+---
+
 ### vMix Caller plugin v1.8.0 — 2026-05-01
 
 **Fix: SRS bridge SRT not enabled — default rtc.conf has no srt_server block**
