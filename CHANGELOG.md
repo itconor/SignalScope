@@ -2,6 +2,21 @@
 
 ---
 
+### Brand Screen plugin v1.3.24 — 2026-05-01
+
+**CueServer LED: simplified brand form — colour + brightness is all you need**
+
+The brand/station LED section has been stripped back to what actually matters:
+
+- **Brightness slider** — how intense the LEDs are for this brand (0–100%)
+- **Preview button** — pick any configured studio and push the brand colour to its LEDs right now to test
+
+The command string text box, cue number input, Save as Cue button, and zone name field are all gone. The brand colour drives the DMX directly — when a brand goes live in a studio, the hub automatically generates `Channel N At V` commands from the brand colour × brightness × that studio's strip channel config. No manual command entry, no cue recording. Each studio's strips are defined once in the studio settings; every brand assigned to that studio just works.
+
+The CueServer LED section is hidden entirely if no studios have CueServer configured.
+
+---
+
 ### Brand Screen plugin v1.3.23 — 2026-04-30
 
 **CueServer UX overhaul: per-brand brightness, zone name, auto-save on scene select**

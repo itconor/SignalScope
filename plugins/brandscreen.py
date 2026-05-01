@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.23",
+    "version":  "1.3.24",
 }
 
 _BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -1506,12 +1506,7 @@ function _studioForm(sd){
     +'<p class="hint" style="margin-top:4px">IP address or hostname of the CueServer appliance on the studio LAN.</p>'
     +'</div>'
     +'</div>'
-    +'<div class="field" style="margin-bottom:10px">'
-    +'<label>Zone Name <span style="font-weight:400;font-size:10px;text-transform:none;letter-spacing:0;color:var(--mu)">(optional)</span></label>'
-    +'<input type="text" id="sd-cs-zone-'+sd.id+'" value="'+_esc(sd.cs_zone_name||'')+'" placeholder="e.g. Studio1LED" style="max-width:220px">'
-    +'<p class="hint" style="margin-top:4px">CueServer zone name for this studio. When set, brand commands use <code>ZONE "…" Preset N ON</code> format. Leave blank to use <code>Cue N Go</code>.</p>'
-    +'</div>'
-    +'<div class="slabel" style="margin-bottom:6px">DMX Strips <span style="font-weight:400;font-size:10px;text-transform:none;letter-spacing:0;color:var(--mu)">— channels only; brightness is set per brand below</span></div>'
+    +'<div class="slabel" style="margin-bottom:6px">DMX Strips <span style="font-weight:400;font-size:10px;text-transform:none;letter-spacing:0;color:var(--mu)">— add one row per LED strip; brightness is set per brand</span></div>'
     +'<div id="sd-cs-strips-'+sd.id+'">'
     +(function(){
       var strips=sd.cs_strips&&sd.cs_strips.length?sd.cs_strips:[];
@@ -1645,44 +1640,30 @@ function _stationForm(s){
     +(s._has_logo?'<button class="btn bd bs" data-action="del-logo" data-sid="'+s.id+'">Remove</button>':'')
     +'</div>'
     +'<p class="hint" style="margin-top:5px">PNG with transparent background recommended. SVG, JPG, WebP also supported.</p>'
-    +'<hr class="sep">'
-    +'<div class="slabel">CueServer LED</div>'
-    +'<div class="grid2" style="margin-bottom:8px">'
-    +'<div class="field">'
-    +'<label>Command string</label>'
-    +'<input type="text" id="f-csCmd-'+s.id+'" value="'+_esc(s.cueserver_cmd||'')+'" placeholder="Cue 5 Go  or  ZONE \\"Studio1LED\\" Preset 3 ON">'
-    +'<p class="hint" style="margin-top:4px">Fired when this brand goes live. Use the tools below to auto-set from a scene.</p>'
-    +'</div>'
-    +'<div class="field">'
-    +(function(){var bri=s.cs_brightness!==undefined?s.cs_brightness:100;
-      return '<label>Brightness <span id="f-csBri-lbl-'+s.id+'" style="font-weight:400;color:var(--tx)">'+bri+'%</span></label>'
-      +'<input type="range" id="f-csBri-'+s.id+'" min="0" max="100" value="'+bri+'" style="width:100%;accent-color:var(--acc);cursor:pointer" title="LED brightness for this brand">'
-      +'<p class="hint" style="margin-top:4px">0 = off · 100 = full. Applies to all DMX strips for this brand.</p>';
+    +(function(){
+      // Only render the CueServer LED section if at least one studio has CueServer configured.
+      var csStudios=_studios.filter(function(sd){return sd.cueserver_site&&sd.cueserver_host;});
+      if(!csStudios.length) return '';
+      var bri=s.cs_brightness!==undefined?s.cs_brightness:100;
+      var stOpts='<option value="">— choose studio —</option>'
+        +csStudios.map(function(sd){return '<option value="'+_esc(sd.id)+'">'+_esc(sd.name)+'</option>';}).join('');
+      return '<hr class="sep">'
+        +'<div class="slabel">CueServer LED</div>'
+        +'<div class="field" style="margin-bottom:12px">'
+        +'<label>Brightness <span id="f-csBri-lbl-'+s.id+'" style="font-weight:400;color:var(--tx)">'+bri+'%</span></label>'
+        +'<input type="range" id="f-csBri-'+s.id+'" min="0" max="100" value="'+bri+'" style="width:100%;max-width:320px;accent-color:var(--acc);cursor:pointer">'
+        +'<p class="hint" style="margin-top:4px">0 = off · 100 = full. The brand colour is set from the colour picker above — brightness controls how intense the LEDs are for this brand.</p>'
+        +'</div>'
+        +'<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:4px">'
+        +'<div class="field" style="flex:1;min-width:160px"><label>Preview on studio</label>'
+        +'<select id="f-cs-studio-'+s.id+'">'+stOpts+'</select></div>'
+        +'<div style="display:flex;align-items:center;gap:8px;padding-bottom:1px">'
+        +'<span id="f-cs-swatch-'+s.id+'" style="width:22px;height:22px;border-radius:4px;border:1px solid var(--bor);background:'+_esc(s.brand_colour||'#17a8ff')+';flex-shrink:0"></span>'
+        +'<button class="btn bg bs" data-action="cs-preview" data-sid="'+s.id+'">💡 Preview</button>'
+        +'</div>'
+        +'</div>'
+        +'<span id="f-cs-status-'+s.id+'" style="font-size:11px;color:var(--mu)"></span>';
     })()
-    +'</div>'
-    +'</div>'
-    +'<div style="background:rgba(23,52,95,.3);border:1px solid var(--bor);border-radius:8px;padding:12px;margin-bottom:4px">'
-    +'<div class="slabel" style="margin-bottom:8px;font-size:10px">Create / preview scene from brand colour</div>'
-    +'<div class="grid2" style="margin-bottom:8px">'
-    +'<div class="field"><label>Studio</label>'
-    +'<select id="f-cs-studio-'+s.id+'" data-cs-st-sel="'+s.id+'">'
-    +'<option value="">— choose studio —</option>'
-    +_studios.filter(function(sd){return sd.cueserver_site&&sd.cueserver_host;}).map(function(sd){
-      return '<option value="'+_esc(sd.id)+'">'+_esc(sd.name)+'</option>';
-    }).join('')
-    +'</select></div>'
-    +'<div class="field"><label id="f-cs-cue-lbl-'+s.id+'">Cue / Preset number</label>'
-    +'<input type="number" id="f-cs-cue-'+s.id+'" min="1" max="9999" placeholder="e.g. 5" style="width:100%"></div>'
-    +'</div>'
-    +'<div id="f-cs-scenes-'+s.id+'" style="margin-bottom:8px;display:none"></div>'
-    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
-    +'<span style="font-size:11px;color:var(--mu)">Brand colour:</span>'
-    +'<span id="f-cs-swatch-'+s.id+'" style="width:22px;height:22px;border-radius:4px;border:1px solid var(--bor);background:'+_esc(s.brand_colour||'#17a8ff')+';flex-shrink:0"></span>'
-    +'<button class="btn bg bs" data-action="cs-preview" data-sid="'+s.id+'">💡 Preview on LEDs</button>'
-    +'<button class="btn bp bs" data-action="cs-record" data-sid="'+s.id+'">📋 Save as Cue</button>'
-    +'<span id="f-cs-status-'+s.id+'" style="font-size:11px;color:var(--mu)"></span>'
-    +'</div>'
-    +'</div>'
     +'<hr class="sep">'
     +'<div class="slabel">Now Playing Source</div>'
     +'<div class="field"><label>Source</label>'
@@ -1736,7 +1717,6 @@ function _saveSd(sid){
     sb_studio_id:_v('sd-sbst-'+sid)||'',
     cueserver_site:_v('sd-cs-site-'+sid)||'',
     cueserver_host:_v('sd-cs-host-'+sid)||'',
-    cs_zone_name:(_v('sd-cs-zone-'+sid)||'').trim(),
     cs_strips:_csGetStrips(sid),
   }).then(function(r){return r.json();}).then(function(d){
     if(d.error){_msg(d.error,false);return;}
@@ -1778,7 +1758,6 @@ function _saveSt(sid, _onDone){
     np_api_url:_v('f-npurl-'+sid)||'', np_api_title_path:_v('f-nptpath-'+sid)||'',
     np_api_artist_path:_v('f-npapath-'+sid)||'', np_manual:_v('f-npman-'+sid)||'',
     message:_v('f-msg-'+sid)||'',
-    cueserver_cmd:_v('f-csCmd-'+sid)||'',
     cs_brightness:parseInt(_v('f-csBri-'+sid)||'100',10),
   };
   _post('/api/brandscreen/station/'+sid, data).then(function(r){return r.json();}).then(function(d){
@@ -1956,101 +1935,26 @@ function _csFetchScenes(studio_id){
 }
 
 function _csBri(station_id){
-  // Return current brightness value (0–100) for a station's brand form.
   var el=document.getElementById('f-csBri-'+station_id);
   return el?parseInt(el.value,10):100;
-}
-function _csStudioZone(studio_id){
-  // Return the zone name configured on a studio (may be empty).
-  var sd=_sdById(studio_id); return sd?(sd.cs_zone_name||''):'';
-}
-function _csBuildCmd(studio_id, num){
-  // Build the correct CueScript command for a cue/preset number.
-  // If the studio has a zone name set → ZONE "Name" Preset N ON
-  // Otherwise                          → Cue N Go
-  var zone=_csStudioZone(studio_id);
-  return zone?('ZONE "'+zone+'" Preset '+num+' ON'):('Cue '+num+' Go');
 }
 
 function _csPreview(station_id){
   var studio_id=_v('f-cs-studio-'+station_id)||'';
-  if(!studio_id){_msg('Pick a studio first',false); return;}
-  var colour=_v('f-brand-'+station_id)||'#17a8ff';
+  if(!studio_id){_msg('Choose a studio to preview on',false); return;}
+  var colour=_v('f-brand-'+station_id)||((_stById(station_id)||{}).brand_colour||'#17a8ff');
   var bri=_csBri(station_id);
   var statusEl=document.getElementById('f-cs-status-'+station_id);
   if(statusEl)statusEl.textContent='Sending…';
   _post('/api/brandscreen/cueserver_action/'+studio_id,{action:'preview_colour',colour:colour,brightness:bri})
     .then(function(r){return r.json();}).then(function(d){
       if(d.error){if(statusEl)statusEl.textContent='Error: '+d.error; return;}
-      if(statusEl)statusEl.textContent='Colour sent — LEDs should update within ~5 s';
+      if(statusEl)statusEl.textContent='Done — LEDs updating';
+      setTimeout(function(){if(statusEl)statusEl.textContent='';},4000);
     }).catch(function(){if(statusEl)statusEl.textContent='Request failed';});
 }
 
-function _csRecord(station_id){
-  var studio_id=_v('f-cs-studio-'+station_id)||'';
-  if(!studio_id){_msg('Pick a studio first',false); return;}
-  var cue_num=parseInt(_v('f-cs-cue-'+station_id)||'0',10);
-  if(!cue_num||cue_num<1){_msg('Enter a cue / preset number first',false); return;}
-  var colour=_v('f-brand-'+station_id)||'#17a8ff';
-  var bri=_csBri(station_id);
-  var statusEl=document.getElementById('f-cs-status-'+station_id);
-  if(statusEl)statusEl.textContent='Recording…';
-  _post('/api/brandscreen/cueserver_action/'+studio_id,{action:'record_cue',colour:colour,cue_num:cue_num,brightness:bri})
-    .then(function(r){return r.json();}).then(function(d){
-      if(d.error){if(statusEl)statusEl.textContent='Error: '+d.error; return;}
-      _csPollResult(studio_id,'record_cue',
-        function(data){
-          var cmd=_csBuildCmd(studio_id,cue_num);
-          var cmdInput=document.getElementById('f-csCmd-'+station_id);
-          if(cmdInput) cmdInput.value=cmd;
-          if(statusEl)statusEl.textContent='Saving…';
-          // Auto-save the station so the command persists without a manual click
-          _saveSt(station_id,function(){
-            if(statusEl)statusEl.textContent='✓ Cue '+cue_num+' recorded · command saved: '+cmd;
-          });
-        },
-        function(err){if(statusEl)statusEl.textContent='Error: '+err;}
-      );
-    }).catch(function(){if(statusEl)statusEl.textContent='Request failed';});
-}
-
-// When the studio dropdown in a brand form changes, show cached scene list and
-// update the cue label to reflect whether this studio uses zones or cues.
-document.addEventListener('change',function(e){
-  var sel=e.target.closest('[data-cs-st-sel]');
-  if(sel){
-    var station_id=sel.dataset.csStSel;
-    var studio_id=sel.value;
-    var scenesEl=document.getElementById('f-cs-scenes-'+station_id);
-    if(!scenesEl) return;
-    // Update label to hint about zone vs cue format
-    var lbl=document.getElementById('f-cs-cue-lbl-'+station_id);
-    if(lbl){
-      var zone=studio_id?_csStudioZone(studio_id):'';
-      lbl.textContent=zone?'Preset number':'Cue number';
-    }
-    if(!studio_id){scenesEl.style.display='none'; return;}
-    // Show cached scenes if available, otherwise hide
-    var cached=_csSceneCache[studio_id];
-    if(cached&&cached.length){
-      _csRenderScenes(cached,'f-cs-scenes-'+station_id,function(cueNum){
-        var inp=document.getElementById('f-cs-cue-'+station_id);
-        if(inp) inp.value=cueNum;
-        // Auto-set command and save when user clicks "Use" from the scene list
-        var cmd=_csBuildCmd(studio_id,cueNum);
-        var cmdInput=document.getElementById('f-csCmd-'+station_id);
-        if(cmdInput) cmdInput.value=cmd;
-        var statusEl=document.getElementById('f-cs-status-'+station_id);
-        if(statusEl) statusEl.textContent='Saving…';
-        _saveSt(station_id,function(){
-          if(statusEl) statusEl.textContent='✓ Command saved: '+cmd;
-        });
-      });
-    } else {
-      scenesEl.style.display='none';
-    }
-  }
-});
+// (No data-cs-st-sel handler needed — brand form studio dropdown is a plain select now)
 
 document.addEventListener('click',function(e){
   var btn=e.target.closest('[data-action]'); if(!btn) return;
@@ -2070,7 +1974,6 @@ document.addEventListener('click',function(e){
   else if(a==='cs-del-strip')    _csDelStrip(btn);
   else if(a==='cs-fetch-scenes') _csFetchScenes(sid);
   else if(a==='cs-preview')      _csPreview(sid);
-  else if(a==='cs-record')       _csRecord(sid);
   else if(a==='takeover-send'){
     var _toTitle=(_v('sd-to-title-'+sid)||'').trim();
     var _toText=(_v('sd-to-text-'+sid)||'').trim();
