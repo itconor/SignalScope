@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.52",
+    "version":  "1.3.53",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -4520,15 +4520,10 @@ def register(app, ctx):
         site = (request.headers.get("X-Site") or "").strip()
         if not site:
             return jsonify({}), 400
-        # Accept any site that has sent at least one heartbeat (exists in _sites).
-        # We don't require _approved here — vmixcaller uses HMAC auth independently
-        # and never triggers the _approved flag, yet it's a legitimate client.
-        # WHEP relay is low-risk (client forwards SDP, not executing commands).
-        known = hub_server._sites or {}
-        if site not in known:
-            monitor.log(f"[brandscreen] whep_cmd: unknown site '{site}' "
-                        f"(known: {list(known.keys())})", "warn")
-            return jsonify({}), 403
+        # No hub_server._sites membership check — vmixcaller uses its own HMAC
+        # auth and never triggers the _approved / _sites population path.
+        # UUID relay_id provides sufficient relay-specific security; SDP relay
+        # is low-risk (forwards WebRTC SDP, not executing arbitrary commands).
         now = _time.monotonic()
         with _whep_lock:
             # Expire relays older than 90 s with no answer
@@ -4541,7 +4536,7 @@ def register(app, ctx):
                 if r["answer"] is None and not r["claimed"]:
                     r["claimed"] = True
                     monitor.log(f"[brandscreen] whep_cmd: dispatching relay "
-                                f"{relay_id[:8]}… to site '{site}'", "info")
+                                f"{relay_id[:8]}… to site '{site}'")
                     return jsonify({"relay_id": relay_id,
                                     "whep_url": r["whep_url"],
                                     "sdp": r["sdp"]})
@@ -4553,9 +4548,7 @@ def register(app, ctx):
         site = (request.headers.get("X-Site") or "").strip()
         if not site:
             return jsonify({}), 400
-        # Same auth as whep_cmd: accept any site that has sent a heartbeat
-        if site not in (hub_server._sites or {}):
-            return jsonify({}), 403
+        # No _sites membership check — same reasoning as whep_cmd above.
         answer = request.get_data(as_text=True).strip()
         if not answer:
             # Client failed — unclaim so another site can try
@@ -4958,7 +4951,7 @@ def register(app, ctx):
     # Poller runs on any node connected to a remote hub (client or both mode)
     if _whep_mode in ("client", "both") and _whep_hub and _whep_site:
         monitor.log(f"[brandscreen] WHEP relay client poller starting "
-                    f"(mode={_whep_mode}, hub={_whep_hub}, site={_whep_site})", "info")
+                    f"(mode={_whep_mode}, hub={_whep_hub}, site={_whep_site})")
         def _whep_client_poller():
             import urllib.request as _ureq
             _cmd_url = f"{_whep_hub}/api/brandscreen/whep_cmd"
@@ -4975,7 +4968,7 @@ def register(app, ctx):
                     sdp_offer = d.get("sdp", "")
                     if relay_id and whep_url and sdp_offer:
                         monitor.log(f"[brandscreen] WHEP relay task {relay_id[:8]}… "
-                                    f"→ forwarding SDP to {whep_url}", "info")
+                                    f"→ forwarding SDP to {whep_url}")
                         # Forward SDP offer to local SRS bridge
                         try:
                             fwd = _ureq.Request(
@@ -4987,10 +4980,10 @@ def register(app, ctx):
                             with _ureq.urlopen(fwd, timeout=10) as resp:
                                 answer = resp.read().decode()
                             monitor.log(f"[brandscreen] WHEP SRS answered "
-                                        f"({len(answer)} bytes) for relay {relay_id[:8]}…", "info")
+                                        f"({len(answer)} bytes) for relay {relay_id[:8]}…")
                         except Exception as exc:
                             monitor.log(f"[brandscreen] WHEP SRS forward FAILED "
-                                        f"({whep_url}): {exc}", "warn")
+                                        f"({whep_url}): {exc}")
                             answer = ""
                         # Post answer (or empty on failure) back to hub
                         done = _ureq.Request(
@@ -5003,11 +4996,11 @@ def register(app, ctx):
                         try:
                             _ureq.urlopen(done, timeout=5).close()
                         except Exception as exc:
-                            monitor.log(f"[brandscreen] WHEP done POST failed: {exc}", "warn")
+                            monitor.log(f"[brandscreen] WHEP done POST failed: {exc}")
                 except Exception as exc:
                     if not _fail_logged:
                         monitor.log(f"[brandscreen] WHEP relay poll failed "
-                                    f"({_cmd_url}): {exc}", "warn")
+                                    f"({_cmd_url}): {exc}")
                         _fail_logged = True
                 _time.sleep(3)
 

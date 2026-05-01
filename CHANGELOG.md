@@ -2,6 +2,24 @@
 
 ---
 
+### vMix Caller plugin v1.8.2 + Brand Screen plugin v1.3.53 — 2026-05-01
+
+**Fix: WHEP relay thread never starting when site_name is empty at plugin load**
+
+The `VmixCallerBSWhepRelay` thread read `site_name` once from config at `register()` time. If SignalScope hadn't fully initialised its config yet (site_name empty at that moment), the `if _vc_site:` guard prevented the thread from ever starting — the WHEP relay was silently dead from boot.
+
+Fix: `site_name` is now read dynamically inside the `while True` loop on every iteration (mirrors the `_start_client_thread` pattern). If still empty, the loop sleeps 5 s and retries. The `if _vc_site:` startup guard is removed — the thread always starts and waits for site_name to become available.
+
+**Fix: whep_cmd / whep_done rejecting all client nodes with 403 (brandscreen v1.3.53)**
+
+The `site in hub_server._sites` check was still too strict — a client node running vmixcaller but no main SignalScope might not appear in `_sites` at all. Removed the membership check entirely from both endpoints. Only `X-Site` must be non-empty. UUID relay_id provides sufficient security (SDP relay is low-risk).
+
+**Fix: brandscreen crashes on client at load — monitor.log() level argument not supported**
+
+`monitor.log(msg, "info")` was called at `register()` time in the client WHEP poller branch. On any node where `mode in ("client", "both")` is true this call executes during plugin load, crashing with `MonitorManager.log() takes 2 positional arguments but 3 were given`. (Hub never hits this code path at load time, so hub appeared to work.) All `monitor.log(msg, level)` calls in the brandscreen and vmixcaller WHEP sections changed to `monitor.log(msg)`.
+
+---
+
 ### Brand Screen plugin v1.3.52 — 2026-05-01
 
 **Fix: whep_cmd / whep_done rejecting vmixcaller client with 403**
