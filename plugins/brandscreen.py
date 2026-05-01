@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.31",
+    "version":  "1.3.32",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -450,6 +450,51 @@ def _cs_tv_cmd(studio, on):
     if not parts:
         return ""
     return " ".join(parts) + " Time 1"
+
+def _parse_cs_output_levels(raw):
+    """Parse CueServer /get.cgi?req=out response → {channel: value} dict (1-indexed).
+
+    CueServer firmware returns output levels in several formats:
+    - XML with <outN>V</outN> elements  (most common)
+    - Comma-separated plain text: 0,255,0,0,...
+    - Pipe-separated:            0|255|0|0|...
+
+    Returns {} on any parse failure.  Channel values are integers 0–255.
+    """
+    if not raw:
+        return {}
+    raw = raw.strip()
+    result: dict = {}
+    # ── Try XML ───────────────────────────────────────────────────────────────
+    try:
+        import xml.etree.ElementTree as _ET2
+        import re as _re2
+        root = _ET2.fromstring(raw)
+        for elem in root.iter():
+            m = _re2.match(r'^out(\d+)$', elem.tag, _re2.IGNORECASE)
+            if m and elem.text:
+                try:
+                    result[int(m.group(1))] = int(float(elem.text.strip()))
+                except (ValueError, TypeError):
+                    pass
+        if result:
+            return result
+        # Some firmware wraps values in a single text element
+        text = (root.text or "").strip()
+        if not text and len(root) == 1:
+            text = (list(root)[0].text or "").strip()
+    except Exception:
+        text = raw
+    # ── Try comma / pipe separated list ──────────────────────────────────────
+    try:
+        sep = "," if "," in text else ("|" if "|" in text else None)
+        if sep:
+            vals = [v.strip() for v in text.split(sep)]
+            return {i + 1: int(float(v)) for i, v in enumerate(vals) if v.lstrip("-").replace(".", "", 1).isdigit()}
+    except Exception:
+        pass
+    return {}
+
 
 def _parse_cue_list_xml(raw):
     """Best-effort parser for CueServer's /get.cgi?req=csi XML response.
@@ -1067,6 +1112,25 @@ function _populateSchedSelects(){
 
 renderStudios();renderBrands();renderSchedules();
 _loadActive();setInterval(_loadActive,30000);
+
+// ── TV state polling — keeps buttons in sync with external DMX changes ────────
+(function(){
+  function _pollTv(){
+    fetch('/api/brandscreen/tv_states',{credentials:'same-origin'})
+      .then(function(r){return r.json();}).then(function(d){
+        var states=d.states||{};
+        var changed=false;
+        _studios.forEach(function(sd){
+          if(Object.prototype.hasOwnProperty.call(states,sd.id)){
+            var realOn=!!states[sd.id];
+            if(realOn!==!!sd._tv_on){sd._tv_on=realOn;changed=true;}
+          }
+        });
+        if(changed) renderStudios();
+      }).catch(function(){});
+  }
+  setInterval(_pollTv,8000);
+})();
 
 // ── Add brand form ────────────────────────────────────────────────────────────
 (function(){
@@ -4093,6 +4157,82 @@ def register(app, ctx):
             on = _tv_state.get(studio_id, False)
         return jsonify({"on": on})
 
+    # ── TV state: client fetches which channels to monitor ───────────────────
+    @app.get("/api/brandscreen/tv_light_channels")
+    def bs_tv_light_channels():
+        """Return TV light channel config for studios assigned to the requesting site.
+
+        Called by the client poller so it knows which CueServer channels to read
+        and which studio IDs to tag the results with.  Authenticated via X-Site
+        header (same as cueserver_cmd).
+        """
+        site = (request.headers.get("X-Site") or "").strip()
+        if not site:
+            return jsonify({"studios": []}), 400
+        sdata = (hub_server._sites or {}).get(site, {})
+        if not sdata.get("_approved"):
+            return jsonify({"studios": []}), 403
+        cfg = _cfg_load()
+        out = []
+        for sd in cfg.get("studios", []):
+            if (sd.get("cueserver_site") or "").strip() != site:
+                continue
+            cs_host = (sd.get("cueserver_host") or "").strip()
+            if not cs_host:
+                continue
+            fixtures = sd.get("tv_lights") or []
+            if not fixtures:
+                ch_w  = int(sd.get("tv_ch_white") or 0)
+                ch_ww = int(sd.get("tv_ch_warm")  or 0)
+                if ch_w or ch_ww:
+                    fixtures = [{"ch_white": ch_w, "ch_warm": ch_ww}]
+            if not fixtures:
+                continue
+            out.append({
+                "id":       sd["id"],
+                "cs_host":  cs_host,
+                "fixtures": [{"ch_white": int(f.get("ch_white") or 0),
+                               "ch_warm":  int(f.get("ch_warm")  or 0)}
+                              for f in fixtures],
+            })
+        return jsonify({"studios": out})
+
+    # ── TV state: client reports real DMX states read from CueServer ──────────
+    @app.post("/api/brandscreen/tv_state_report")
+    def bs_tv_state_report():
+        """Client posts real TV light on/off states polled from CueServer DMX.
+
+        Body: {"states": [{"studio_id": "…", "tv_on": true}]}
+        Authenticated via X-Site header.
+        """
+        site = (request.headers.get("X-Site") or "").strip()
+        if not site:
+            return jsonify({}), 400
+        sdata = (hub_server._sites or {}).get(site, {})
+        if not sdata.get("_approved"):
+            return jsonify({}), 403
+        body   = request.get_json(force=True) or {}
+        states = body.get("states") or []
+        with _tv_state_lock:
+            for item in states:
+                sid = (item.get("studio_id") or "").strip()
+                if sid:
+                    _tv_state[sid] = bool(item.get("tv_on"))
+        return jsonify({"ok": True})
+
+    # ── TV state: browser polls for on/off state of all studios ──────────────
+    @app.get("/api/brandscreen/tv_states")
+    @login_required
+    def bs_tv_states():
+        """Return current TV on/off state for every studio.
+
+        Used by the producer/admin browser to keep the TV light buttons in
+        sync without a full page reload.  Lightweight: just reads _tv_state.
+        """
+        with _tv_state_lock:
+            states = dict(_tv_state)
+        return jsonify({"states": states})
+
     # ── Mic-live state query (used on page load to restore state) ─────────────
     @app.get("/api/brandscreen/studio/<studio_id>/mic_state")
     @api_auth
@@ -4313,8 +4453,10 @@ def register(app, ctx):
         def _cueserver_client_poller():
             import urllib.request as _ureq
             import xml.etree.ElementTree as _ET
-            _poll_url   = f"{_cs_hub}/api/brandscreen/cueserver_cmd"
-            _result_url = f"{_cs_hub}/api/brandscreen/cueserver_result_post"
+            _poll_url      = f"{_cs_hub}/api/brandscreen/cueserver_cmd"
+            _result_url    = f"{_cs_hub}/api/brandscreen/cueserver_result_post"
+            _tv_cfg_url    = f"{_cs_hub}/api/brandscreen/tv_light_channels"
+            _tv_report_url = f"{_cs_hub}/api/brandscreen/tv_state_report"
 
             def _cs_get(host, path):
                 """GET from CueServer; returns (text, None) or (None, error)."""
@@ -4342,9 +4484,73 @@ def register(app, ctx):
                 except Exception:
                     pass
 
+            # ── TV state polling state ────────────────────────────────────────
+            # Poll CueServer output levels every _TV_POLL_EVERY seconds and
+            # report on/off state to the hub so the browser stays in sync even
+            # when another application changes the lights.
+            _TV_POLL_EVERY  = 8          # seconds between DMX reads
+            _tv_poll_due    = _time.monotonic()   # first poll immediately
+            _tv_cfg_cache: list = []             # cached studio channel config
+            _tv_cfg_next    = 0.0                 # time to refresh config cache
+
+            def _do_tv_poll():
+                nonlocal _tv_cfg_cache, _tv_cfg_next
+                try:
+                    # Refresh channel config from hub every 60 s (studios rarely change)
+                    now = _time.monotonic()
+                    if now >= _tv_cfg_next:
+                        req = _ureq.Request(_tv_cfg_url, headers={"X-Site": _cs_site})
+                        with _ureq.urlopen(req, timeout=5) as r:
+                            _tv_cfg_cache = json.loads(r.read()).get("studios") or []
+                        _tv_cfg_next = now + 60.0
+
+                    if not _tv_cfg_cache:
+                        return
+
+                    # Group studios by CueServer host — one DMX read per host
+                    by_host: dict = {}
+                    for sd in _tv_cfg_cache:
+                        by_host.setdefault(sd["cs_host"], []).append(sd)
+
+                    states = []
+                    for cs_host, host_studios in by_host.items():
+                        raw, err = _cs_get(cs_host, "/get.cgi?req=out")
+                        if err or not raw:
+                            continue
+                        levels = _parse_cs_output_levels(raw)
+                        if not levels:
+                            continue
+                        for sd in host_studios:
+                            # On = any white channel > threshold (10 handles DMX noise)
+                            tv_on = any(
+                                levels.get(int(f.get("ch_white") or 0), 0) > 10
+                                for f in sd.get("fixtures", [])
+                                if int(f.get("ch_white") or 0)
+                            )
+                            states.append({"studio_id": sd["id"], "tv_on": tv_on})
+
+                    if not states:
+                        return
+
+                    body = json.dumps({"states": states}).encode()
+                    req  = _ureq.Request(_tv_report_url, data=body, method="POST",
+                                         headers={"Content-Type": "application/json",
+                                                  "X-Site": _cs_site})
+                    _ureq.urlopen(req, timeout=5).close()
+                except Exception:
+                    pass
+
             while True:
                 try:
                     _time.sleep(1)
+
+                    # ── TV state polling (independent of command queue) ────────
+                    now = _time.monotonic()
+                    if now >= _tv_poll_due:
+                        _tv_poll_due = now + _TV_POLL_EVERY
+                        _do_tv_poll()
+
+                    # ── CueServer command queue ───────────────────────────────
                     req = _ureq.Request(_poll_url, headers={"X-Site": _cs_site})
                     with _ureq.urlopen(req, timeout=8) as resp:
                         d = json.loads(resp.read())
@@ -4386,7 +4592,9 @@ def register(app, ctx):
                     elif action == "tv_lights":
                         if host:
                             _cs_exe(host, d.get("cmd", ""))
-                        # no response needed
+                        # After executing a TV command, re-poll immediately so
+                        # the hub reflects the new hardware state right away
+                        _tv_poll_due = _time.monotonic() + 1.5
 
                     # ── Admin: set colour + Record Cue N ──────────────────────
                     elif action == "record_cue":
@@ -4414,3 +4622,56 @@ def register(app, ctx):
 
         threading.Thread(target=_cueserver_client_poller, daemon=True,
                          name="bs-cueserver-poll").start()
+
+    # ── Standalone / both-mode: direct CueServer TV state polling ────────────
+    # In standalone or both modes the machine has direct LAN access to
+    # CueServer — poll DMX output levels here and update _tv_state directly.
+    elif _cs_mode in ("standalone", "both"):
+        def _tv_state_direct_poller():
+            import urllib.request as _ureq3
+            while True:
+                _time.sleep(8)
+                try:
+                    cfg = _cfg_load()
+                    by_host: dict = {}
+                    for sd in cfg.get("studios", []):
+                        cs_host = (sd.get("cueserver_host") or "").strip()
+                        if not cs_host:
+                            continue
+                        fixtures = sd.get("tv_lights") or []
+                        if not fixtures:
+                            ch_w  = int(sd.get("tv_ch_white") or 0)
+                            ch_ww = int(sd.get("tv_ch_warm")  or 0)
+                            if ch_w or ch_ww:
+                                fixtures = [{"ch_white": ch_w, "ch_warm": ch_ww}]
+                        if not fixtures:
+                            continue
+                        by_host.setdefault(cs_host, []).append({
+                            "id":       sd["id"],
+                            "fixtures": [{"ch_white": int(f.get("ch_white") or 0),
+                                          "ch_warm":  int(f.get("ch_warm")  or 0)}
+                                         for f in fixtures],
+                        })
+                    for cs_host, studios_list in by_host.items():
+                        try:
+                            with _ureq3.urlopen(
+                                    f"http://{cs_host}/get.cgi?req=out", timeout=5) as r:
+                                raw = r.read().decode("utf-8", errors="replace")
+                        except Exception:
+                            continue
+                        levels = _parse_cs_output_levels(raw)
+                        if not levels:
+                            continue
+                        with _tv_state_lock:
+                            for sd in studios_list:
+                                tv_on = any(
+                                    levels.get(int(f.get("ch_white") or 0), 0) > 10
+                                    for f in sd["fixtures"]
+                                    if int(f.get("ch_white") or 0)
+                                )
+                                _tv_state[sd["id"]] = tv_on
+                except Exception:
+                    pass
+
+        threading.Thread(target=_tv_state_direct_poller, daemon=True,
+                         name="bs-tv-state-direct").start()

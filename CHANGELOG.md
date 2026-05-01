@@ -2,6 +2,19 @@
 
 ---
 
+### Brand Screen plugin v1.3.32 — 2026-05-01
+
+**Real-time TV light state sync from CueServer DMX**
+
+- TV light on/off state is now polled directly from CueServer's DMX output levels every 8 seconds, so the buttons reflect the true hardware state even if lights are changed from another application (vMix, CueServer console, etc.)
+- **Client nodes**: the existing CueServer poller thread reads `/get.cgi?req=out` from CueServer, checks each studio's white channel value (> 10 = on), and reports states to the hub. After a TV command is sent, a re-poll fires after 1.5 s so the button updates immediately
+- **Standalone / both-mode nodes**: a dedicated `bs-tv-state-direct` thread polls CueServer directly and updates state in-memory
+- Studio channel config is cached for 60 s on the client (studios rarely change); DMX reads happen independently of the command queue so they never delay brand changes
+- Browser polls `/api/brandscreen/tv_states` every 8 s and updates buttons in place when any state differs — no full re-render unless something changed
+- New hub endpoints: `GET /api/brandscreen/tv_light_channels` (channel config for client), `POST /api/brandscreen/tv_state_report` (client → hub state update), `GET /api/brandscreen/tv_states` (browser poll)
+
+---
+
 ### Brand Screen plugin v1.3.31 — 2026-05-01
 
 **TV lights layout fix on producer page**
