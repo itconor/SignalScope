@@ -2,6 +2,15 @@
 
 ---
 
+### Brand Screen plugin v1.3.41 — 2026-05-01
+
+**Fix: admin page JS crash — non-ASCII ellipsis in `_tvTestDmx` function**
+
+- The `_tvTestDmx` function introduced in v1.3.39 contained a U+2026 HORIZONTAL ELLIPSIS character (`…`) inside a JavaScript string literal (`'Reading DMX…'`). This is not valid ASCII and causes a `SyntaxError: Invalid or unexpected token` in browsers that do not handle non-ASCII JS source, killing the entire inline script block on the admin page. All studios/stations failed to render and no buttons responded.
+- Fixed by replacing the ellipsis with three ASCII dots (`'Reading DMX...'`).
+
+---
+
 ### Brand Screen plugin v1.3.40 — 2026-05-01
 
 **Fix: red LED colours desaturated — remove RGBW decomposition from `_cs_colour_cmd`**

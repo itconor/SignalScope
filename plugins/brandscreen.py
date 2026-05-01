@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.40",
+    "version":  "1.3.41",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -2260,7 +2260,7 @@ function _csPreview(station_id){
 function _tvTestDmx(studio_id){
   var statusEl=document.getElementById('sd-tv-dmx-status-'+studio_id);
   var resultEl=document.getElementById('sd-tv-dmx-result-'+studio_id);
-  if(statusEl) statusEl.textContent='Reading DMX…';
+  if(statusEl) statusEl.textContent='Reading DMX...';
   if(resultEl){ resultEl.style.display='none'; resultEl.textContent=''; }
   _post('/api/brandscreen/cueserver_action/'+studio_id,{action:'poll_dmx'})
     .then(function(r){return r.json();}).then(function(d){
