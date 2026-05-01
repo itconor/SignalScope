@@ -2,6 +2,14 @@
 
 ---
 
+### Brand Screen plugin v1.3.61 — 2026-05-01
+
+**Debug: log rtpmap dict and full filtered SDP to console before setRemoteDescription**
+
+Temporary diagnostic — logs `[BS-video] rtpmap: {...}` and `[BS-video] FILTERED SDP:` to the browser console so the exact SDP Chrome receives can be inspected.
+
+---
+
 ### Brand Screen plugin v1.3.60 — 2026-05-01
 
 **Fix: Complete SDP rewrite — drop non-video m= sections, codec-aware PT filtering**

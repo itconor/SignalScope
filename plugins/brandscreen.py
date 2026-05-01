@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.60",
+    "version":  "1.3.61",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3398,6 +3398,8 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
               }
               if(_stripped.length)console.log('[BS-video] stripped: '+_stripped.join(' | '));
               console.log('[BS-video] '+_cands.length+' candidates, vidMid='+_firstVidMid+', SDP lines='+_filtered.length);
+              console.log('[BS-video] rtpmap: '+JSON.stringify(_rtpmap));
+              console.log('[BS-video] FILTERED SDP:\\n'+_filtered.join('\\n'));
               return pc.setRemoteDescription({type:'answer',sdp:_filtered.join('\\r\\n')})
                 .then(function(){
                   console.log('[BS-video] setRemoteDescription OK — injecting '+_cands.length+' ICE candidates');
