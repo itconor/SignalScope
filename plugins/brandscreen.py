@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.36",
+    "version":  "1.3.37",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -439,7 +439,7 @@ def _cs_tv_cmd(studio, on):
             fixtures = [{"name": "TV Light 1", "ch_white": ch_w, "ch_warm": ch_ww}]
     if not fixtures:
         return ""
-    val = "255" if on else "0"
+    val = "100" if on else "0"
     parts = []
     for fix in fixtures:
         ch_warm  = int(fix.get("ch_warm")  or 0)

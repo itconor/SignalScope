@@ -2,6 +2,14 @@
 
 ---
 
+### Brand Screen plugin v1.3.37 — 2026-05-01
+
+**Fix TV lights: At 100 not At 255 — CueScript is 0–100 percent**
+
+- CueScript `At` values are 0–100 percent (same as `_cs_colour_cmd` which uses `_pct()` to convert). `At 255` is invalid and was silently rejected. Reverted to `At 100` (full on) for both channels — this was the value that worked in v1.3.30
+
+---
+
 ### Brand Screen plugin v1.3.36 — 2026-05-01
 
 **Restore working TV lights — remove CueServer polling**
