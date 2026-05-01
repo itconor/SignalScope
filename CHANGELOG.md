@@ -2,6 +2,14 @@
 
 ---
 
+### Brand Screen plugin v1.3.56 — 2026-05-01
+
+**Fix: SRS SDP whack-a-mole — whitelist-based session-level attribute filter**
+
+SRS WHEP places many attributes at SDP session level that Chrome only accepts at media level (`a=rtcp-fb:`, `a=rtpmap:`, `a=fmtp:`, `a=ssrc:`, `a=candidate:`, etc.). Instead of stripping specific known-bad attribute names one at a time, the filter now whitelists the small set of `a=` attributes that ARE valid at session level (`a=group:`, `a=ice-lite`, `a=fingerprint:`, `a=setup:`, `a=msid-semantic:`, `a=extmap-allow-mixed`) and strips all other `a=` lines that appear before the first `m=` line. Stripped lines are logged to the console for future debugging.
+
+---
+
 ### Brand Screen plugin v1.3.55 — 2026-05-01
 
 **Fix: SRS answer rejected — a=ssrc:N label:audio-... Invalid SDP line**

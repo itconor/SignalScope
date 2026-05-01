@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.55",
+    "version":  "1.3.56",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3320,38 +3320,45 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
           .then(function(a){
             if(a.answer){
               console.log('[BS-video] SDP answer received! Setting remote description...');
-              // Normalise CRLF and strip a=candidate / a=end-of-candidates lines.
-              // SRS WHEP places candidates at session level (before m=); Chrome
-              // rejects session-level candidates as "Invalid SDP line".
-              // We inject them via addIceCandidate() instead, which works regardless
-              // of whether SRS puts them at session or media level.
+              // SRS WHEP generates non-JSEP-compliant SDP: codec attributes
+              // (a=rtpmap, a=fmtp, a=rtcp-fb), SSRC attrs, and ICE candidates
+              // all appear at the SESSION level (before any m= line). Chrome's
+              // WebRTC parser requires them at MEDIA level and rejects them at
+              // session level with "Invalid SDP line".
+              // Strategy: whitelist the small set of a= attrs that ARE valid at
+              // session level; strip everything else before the first m= line.
+              // Candidates are stripped everywhere and re-added via addIceCandidate.
               var _sdp=a.answer.replace(/\\r?\\n/g,'\\r\\n');
               var _lines=_sdp.split('\\r\\n');
               // First pass: find mid of the first m= section
               var _firstMid='0',_inM=false;
               for(var _fi=0;_fi<_lines.length;_fi++){
-                if(_lines[_fi].startsWith('m='))_inM=true;
-                if(_inM&&_lines[_fi].startsWith('a=mid:')){_firstMid=_lines[_fi].slice(6).trim();break;}
+                if(_lines[_fi].indexOf('m=')===0)_inM=true;
+                if(_inM&&_lines[_fi].indexOf('a=mid:')===0){_firstMid=_lines[_fi].slice(6).trim();break;}
               }
-              // Second pass: collect candidates, build cleaned SDP
-              var _cands=[],_curMid=null,_curMIdx=-1,_filtered=[];
+              // Session-level a= attrs Chrome accepts (all others must be media-level)
+              var _sOK=['a=group:','a=ice-lite','a=fingerprint:','a=setup:','a=msid-semantic:','a=extmap-allow-mixed'];
+              function _sessOk(l){for(var _k=0;_k<_sOK.length;_k++)if(l.indexOf(_sOK[_k])===0)return true;return false;}
+              // Second pass: collect candidates, strip bad session-level attrs, build clean SDP
+              var _cands=[],_curMid=null,_curMIdx=-1,_filtered=[],_inMedia=false,_stripped=[];
               for(var _li=0;_li<_lines.length;_li++){
                 var _ln=_lines[_li];
-                if(_ln.startsWith('m='))_curMIdx++;
-                if(_ln.startsWith('a=mid:'))_curMid=_ln.slice(6).trim();
-                if(_ln.startsWith('a=candidate:')){
+                if(_ln.indexOf('m=')===0){_curMIdx++;_curMid=null;_inMedia=true;}
+                if(_ln.indexOf('a=mid:')===0)_curMid=_ln.slice(6).trim();
+                if(_ln.indexOf('a=candidate:')===0){
                   _cands.push({candidate:_ln.slice(2),
                                sdpMid:(_curMIdx<0?_firstMid:(_curMid||_firstMid)),
                                sdpMLineIndex:Math.max(0,_curMIdx)});
-                } else if(_ln.startsWith('a=end-of-candidates')||_ln.startsWith('a=ssrc:')){
-                  /* strip — candidates added via addIceCandidate;
-                     a=ssrc not required for recvonly (Chrome learns from RTP);
-                     SRS sometimes puts audio SSRCs in video section → Chrome rejects */
+                } else if(_ln.indexOf('a=end-of-candidates')===0||_ln.indexOf('a=ssrc:')===0){
+                  _stripped.push(_ln.slice(0,40));
+                } else if(!_inMedia&&_ln.indexOf('a=')===0&&!_sessOk(_ln)){
+                  _stripped.push(_ln.slice(0,40)); // session-level attr not in whitelist
                 } else {
                   _filtered.push(_ln);
                 }
               }
-              console.log('[BS-video] stripped '+_cands.length+' candidates from SDP (firstMid='+_firstMid+')');
+              if(_stripped.length)console.log('[BS-video] stripped session-level: '+_stripped.join(' | '));
+              console.log('[BS-video] '+_cands.length+' candidates, mid='+_firstMid+', SDP lines='+_filtered.length);
               return pc.setRemoteDescription({type:'answer',sdp:_filtered.join('\\r\\n')})
                 .then(function(){
                   console.log('[BS-video] setRemoteDescription OK — injecting '+_cands.length+' ICE candidates');
