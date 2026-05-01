@@ -2,6 +2,16 @@
 
 ---
 
+### Brand Screen plugin v1.3.52 — 2026-05-01
+
+**Fix: whep_cmd / whep_done rejecting vmixcaller client with 403**
+
+`whep_cmd` and `whep_done` checked `sdata.get("_approved")` — a flag that is only set when a site is manually approved through the hub's Sites admin panel. The vmixcaller plugin uses its own HMAC-signed auth and never triggers this flag. So the vmixcaller relay thread was polling `whep_cmd`, getting 403 every time, and never picking up the relay task.
+
+Fix: both endpoints now check `site in hub_server._sites` (has the site sent at least one heartbeat?) instead of `_approved`. Any connected client node can act as a WHEP relay agent — it's low-risk (forwarding SDP, not executing commands).
+
+---
+
 ### Brand Screen plugin v1.3.51 — 2026-05-01
 
 **Diagnostics: poll response shows `claimed` status + hub logs whep_cmd calls**

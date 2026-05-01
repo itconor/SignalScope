@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.51",
+    "version":  "1.3.52",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -4520,10 +4520,14 @@ def register(app, ctx):
         site = (request.headers.get("X-Site") or "").strip()
         if not site:
             return jsonify({}), 400
-        sdata = (hub_server._sites or {}).get(site, {})
-        if not sdata.get("_approved"):
-            monitor.log(f"[brandscreen] whep_cmd: site '{site}' not approved "
-                        f"(known sites: {list((hub_server._sites or {}).keys())})", "warn")
+        # Accept any site that has sent at least one heartbeat (exists in _sites).
+        # We don't require _approved here — vmixcaller uses HMAC auth independently
+        # and never triggers the _approved flag, yet it's a legitimate client.
+        # WHEP relay is low-risk (client forwards SDP, not executing commands).
+        known = hub_server._sites or {}
+        if site not in known:
+            monitor.log(f"[brandscreen] whep_cmd: unknown site '{site}' "
+                        f"(known: {list(known.keys())})", "warn")
             return jsonify({}), 403
         now = _time.monotonic()
         with _whep_lock:
@@ -4549,8 +4553,8 @@ def register(app, ctx):
         site = (request.headers.get("X-Site") or "").strip()
         if not site:
             return jsonify({}), 400
-        sdata = (hub_server._sites or {}).get(site, {})
-        if not sdata.get("_approved"):
+        # Same auth as whep_cmd: accept any site that has sent a heartbeat
+        if site not in (hub_server._sites or {}):
             return jsonify({}), 403
         answer = request.get_data(as_text=True).strip()
         if not answer:
