@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.43",
+    "version":  "1.3.44",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1813,11 +1813,14 @@ function _stationForm(s){
     +'<div class="grid2">'
     +'<div class="field"><label>Brand Colour</label><input type="color" id="f-brand-'+s.id+'" value="'+_esc(s.brand_colour)+'"></div>'
     +(function(){
-      // LED Colour: if empty (new default) show brand colour as the picker value
+      // LED Colour: if empty (new default) show brand colour as the picker value.
+      // data-linked="1" means no explicit LED override — the picker tracks the brand colour.
       var ledCol=s.accent_colour||s.brand_colour||'#17a8ff';
+      var isLinked=(!s.accent_colour||s.accent_colour===s.brand_colour)?'1':'0';
       return '<div class="field"><label>LED Colour</label>'
-        +'<input type="color" id="f-accent-'+s.id+'" value="'+_esc(ledCol)+'">'
-        +'<p class="hint" style="margin-top:3px">Colour sent to DMX LEDs when this brand is live. Change only if your LEDs should show a different colour from the screen.</p>'
+        +'<input type="color" id="f-accent-'+s.id+'" value="'+_esc(ledCol)+'"'
+        +' data-linked="'+isLinked+'" data-brand="'+_esc(s.brand_colour||'#17a8ff')+'">'
+        +'<p class="hint" style="margin-top:3px">Colour sent to DMX LEDs when this brand is live. Automatically follows the brand colour — only change if LEDs should show a different tint.</p>'
         +'</div>';
     })()
     +'</div>'
@@ -2002,7 +2005,9 @@ function _saveSt(sid, _onDone){
   var s=_stById(sid); if(!s) return;
   var data={
     name:_v('f-name-'+sid)||s.name, enabled:!!_v('f-en-'+sid),
-    brand_colour:_v('f-brand-'+sid)||s.brand_colour, accent_colour:_v('f-accent-'+sid)||s.accent_colour,
+    brand_colour:(_v('f-brand-'+sid)||s.brand_colour),
+    // If LED colour matches brand colour, save "" (= track brand) to prevent drift
+    accent_colour:(function(){var bc=_v('f-brand-'+sid)||s.brand_colour,ac=_v('f-accent-'+sid)||s.accent_colour;return ac===bc?'':ac;})(),
     bg_style:_v('f-bg-'+sid)||s.bg_style, logo_anim:_v('f-anim-'+sid)||s.logo_anim,
     show_clock:!!_v('f-clk-'+sid), show_on_air:!!_v('f-oair-'+sid), show_now_playing:!!_v('f-np-'+sid),
     full_screen_logo:!!_v('f-fsl-'+sid),
@@ -2386,18 +2391,20 @@ document.addEventListener('change',function(e){
     if(_laWrap) _laWrap.style.display=_isVid?'none':'';
     if(_alWrap) _alWrap.style.display=_isVid?'none':'';
   }
-  // Sync LED swatch to LED colour picker (f-accent-*)
+  // Sync LED swatch to LED colour picker (f-accent-*) — also mark as explicitly overridden
   if(e.target.id&&e.target.id.startsWith('f-accent-')){
     var _stId=e.target.id.replace('f-accent-','');
     var sw=document.getElementById('f-cs-swatch-'+_stId);
     if(sw) sw.style.background=e.target.value;
+    e.target.dataset.linked='0'; // user manually set LED colour; stop tracking brand
   }
-  // Also sync LED swatch to brand colour if no separate LED colour input exists
+  // When brand colour changes: if LED colour is linked (tracking brand), sync it too
   if(e.target.id&&e.target.id.startsWith('f-brand-')){
     var _stId2=e.target.id.replace('f-brand-','');
     var accentEl=document.getElementById('f-accent-'+_stId2);
-    // Only update swatch from brand if LED colour picker not present (section hidden)
-    if(!accentEl){
+    if(accentEl&&accentEl.dataset.linked!=='0'){
+      accentEl.value=e.target.value;
+      accentEl.dataset.brand=e.target.value;
       var sw2=document.getElementById('f-cs-swatch-'+_stId2);
       if(sw2) sw2.style.background=e.target.value;
     }

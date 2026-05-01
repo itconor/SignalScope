@@ -2,6 +2,21 @@
 
 ---
 
+### Brand Screen plugin v1.3.44 — 2026-05-01
+
+**Fix: LED colour reverts to stale orange/old brand colour after changing brand colour**
+
+Root cause: the LED colour picker (`accent_colour`) drifts on every save. When the form renders, the LED picker is pre-filled with `accent_colour || brand_colour`. If `accent_colour` is empty, it shows the current `brand_colour`. When the user saves (having only changed `brand_colour`), `accent_colour` gets set to the OLD picker value — the previous brand colour — effectively baking in a stale value forever. On every subsequent brand colour change the LED colour is stuck at whatever it was when the form was last saved.
+
+Example: station previously had `brand_colour='#ff4500'` (orange). User changes brand to `#ff0000` (red) and saves. LED picker still showed `#ff4500` at save time, so `accent_colour='#ff4500'` is persisted. LEDs remain orange despite the brand being red.
+
+Three-part fix:
+1. **Form render** — LED picker gets `data-linked="1"` when there is no explicit accent override (`accent_colour` empty or equal to `brand_colour`), or `data-linked="0"` when the user has set a deliberately different LED colour.
+2. **Change handler** — when the Brand Colour picker changes, the LED picker is automatically updated to match IF `data-linked !== "0"`. When the user manually moves the LED picker, `data-linked` is set to `"0"` so future brand changes no longer override it.
+3. **Save** — if `accent_colour` equals `brand_colour` at save time, `accent_colour` is saved as `""` (empty), meaning "track brand colour". This prevents drift and ensures the LED colour always follows the brand unless the user has deliberately set a different tint.
+
+---
+
 ### Brand Screen plugin v1.3.43 — 2026-05-01
 
 **Fix: admin page SyntaxError — literal newline injected into JS string via Python escape**
