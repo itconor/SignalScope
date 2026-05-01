@@ -2,6 +2,16 @@
 
 ---
 
+### Brand Screen plugin v1.3.39 — 2026-05-01
+
+**TV DMX diagnostic — Test DMX read button in studio settings**
+
+- Added **🔬 Test DMX read** button in the TV Lights section of each studio's settings accordion
+- Queues a `poll_dmx` action to the client, which reads `/get.cgi?req=out` from CueServer and returns the raw response + how many channels were parsed + the actual values on the configured TV light channels
+- Used to diagnose whether the CueServer output-level response format is being parsed correctly by `_parse_cs_output_levels`
+
+---
+
 ### Brand Screen plugin v1.3.38 — 2026-05-01
 
 **Re-add TV light state polling with per-host locking**

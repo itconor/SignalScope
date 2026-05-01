@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.38",
+    "version":  "1.3.39",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -1740,7 +1740,12 @@ function _studioForm(sd){
       return fixes.map(function(f,i){return _tvLightRowHtml(sd.id,f,i);}).join('');
     })()
     +'</div>'
-    +'<button class="btn bg bs" data-action="tv-add-light" data-sid="'+sd.id+'" style="margin-bottom:12px">+ Add TV Light</button>'
+    +'<button class="btn bg bs" data-action="tv-add-light" data-sid="'+sd.id+'" style="margin-bottom:8px">+ Add TV Light</button>'
+    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">'
+    +'<button class="btn bg bs" data-action="tv-test-dmx" data-sid="'+sd.id+'">🔬 Test DMX read</button>'
+    +'<span id="sd-tv-dmx-status-'+sd.id+'" style="font-size:11px;color:var(--mu)"></span>'
+    +'</div>'
+    +'<div id="sd-tv-dmx-result-'+sd.id+'" style="display:none;background:#0a1a2e;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;font-size:11px;font-family:monospace;color:var(--tx);margin-bottom:10px;white-space:pre-wrap"></div>'
     +'<div class="slabel">Screen URL</div>'
     +'<div class="tok-row" style="margin-bottom:6px"><input type="text" value="'+_esc(sd.token)+'" readonly>'
     +'<button class="btn bg bs" data-action="regen-sd-tok" data-sid="'+sd.id+'">Regenerate</button></div>'
@@ -2254,6 +2259,38 @@ function _csPreview(station_id){
 
 // (No data-cs-st-sel handler needed — brand form studio dropdown is a plain select now)
 
+function _tvTestDmx(studio_id){
+  var statusEl=document.getElementById('sd-tv-dmx-status-'+studio_id);
+  var resultEl=document.getElementById('sd-tv-dmx-result-'+studio_id);
+  if(statusEl) statusEl.textContent='Reading DMX…';
+  if(resultEl){ resultEl.style.display='none'; resultEl.textContent=''; }
+  _post('/api/brandscreen/cueserver_action/'+studio_id,{action:'poll_dmx'})
+    .then(function(r){return r.json();}).then(function(d){
+      if(d.error){if(statusEl)statusEl.textContent='Error: '+d.error; return;}
+      _csPollResult(studio_id,'poll_dmx',
+        function(data){
+          if(statusEl) statusEl.textContent='';
+          if(!resultEl) return;
+          var lines=[];
+          lines.push('Raw (first 500 chars):');
+          lines.push((data&&data.raw)||'(empty)');
+          lines.push('');
+          lines.push('Channels parsed: '+(data&&data.parsed!=null?data.parsed:'?'));
+          var chs=data&&data.channels||{};
+          if(Object.keys(chs).length){
+            lines.push('TV light channels:');
+            Object.keys(chs).forEach(function(k){lines.push('  '+k+' = '+chs[k]);});
+          } else {
+            lines.push('TV light channels: none configured or not found in response');
+          }
+          resultEl.textContent=lines.join('\n');
+          resultEl.style.display='block';
+        },
+        function(err){if(statusEl)statusEl.textContent='Error: '+err;}
+      );
+    }).catch(function(){if(statusEl)statusEl.textContent='Request failed';});
+}
+
 document.addEventListener('click',function(e){
   var btn=e.target.closest('[data-action]'); if(!btn) return;
   var a=btn.dataset.action, sid=btn.dataset.sid;
@@ -2275,6 +2312,7 @@ document.addEventListener('click',function(e){
   else if(a==='tv-toggle')       _doTvToggle(sid);
   else if(a==='tv-add-light')    _tvAddLight(sid);
   else if(a==='tv-del-light')    _tvDelLight(btn);
+  else if(a==='tv-test-dmx')     _tvTestDmx(sid);
   else if(a==='takeover-send'){
     var _toTitle=(_v('sd-to-title-'+sid)||'').trim();
     var _toText=(_v('sd-to-text-'+sid)||'').trim();
@@ -4362,6 +4400,19 @@ def register(app, ctx):
         if action == "poll_scenes":
             cmd = {"action": "poll_scenes", "host": cs_host}
 
+        elif action == "poll_dmx":
+            # Read raw DMX output levels — used to diagnose TV light state parsing
+            fixtures = studio.get("tv_lights") or []
+            if not fixtures:
+                ch_w  = int(studio.get("tv_ch_white") or 0)
+                ch_ww = int(studio.get("tv_ch_warm")  or 0)
+                if ch_w or ch_ww:
+                    fixtures = [{"ch_white": ch_w, "ch_warm": ch_ww}]
+            cmd = {"action": "poll_dmx", "host": cs_host,
+                   "fixtures": [{"ch_white": int(f.get("ch_white") or 0),
+                                  "ch_warm":  int(f.get("ch_warm")  or 0)}
+                                 for f in fixtures]}
+
         elif action == "preview_colour":
             colour  = (data.get("colour") or "#ffffff").strip()
             cs_cmd  = _cs_colour_cmd(colour, strips, bri)
@@ -4602,6 +4653,28 @@ def register(app, ctx):
                     elif action == "tv_lights":
                         if host:
                             _cs_exe(host, d.get("cmd", ""))
+
+                    # ── DMX diagnostic read ───────────────────────────────────
+                    elif action == "poll_dmx":
+                        if not host:
+                            continue
+                        raw, err = _cs_get(host, "/get.cgi?req=out")
+                        if err:
+                            _post_result("poll_dmx", error=err)
+                            continue
+                        levels   = _parse_cs_output_levels(raw)
+                        fixtures = d.get("fixtures") or []
+                        ch_vals  = {}
+                        for f in fixtures:
+                            for key in ("ch_white", "ch_warm"):
+                                ch = int(f.get(key) or 0)
+                                if ch:
+                                    ch_vals[f"ch{ch}"] = levels.get(ch, "not found")
+                        _post_result("poll_dmx", data={
+                            "raw":      raw[:500],
+                            "parsed":   len(levels),
+                            "channels": ch_vals,
+                        })
 
                     # ── Admin: set colour + Record Cue N ──────────────────────
                     elif action == "record_cue":
