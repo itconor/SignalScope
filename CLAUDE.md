@@ -63,6 +63,24 @@ Key code locations in `signalscope.py`:
 
 ## Writing a Plugin
 
+### Python escape sequences in triple-quoted template strings — CRITICAL
+
+Plugin templates are Python `"""..."""` triple-quoted strings. Python **processes escape sequences inside them**, including `\n` → U+000A (newline), `\t` → tab, etc. This is silent and creates bugs that are extremely hard to find:
+
+- `lines.join('\n')` in the Python source → `lines.join('` + real newline + `')` in the rendered HTML → **`SyntaxError: Invalid or unexpected token`** in the browser JS engine — the entire script block fails to execute, no studios/stations/buttons work.
+- The browser reports a line:col position that appears to point at unrelated code, because the injected newline shifts all subsequent line numbers.
+- Node.js `--check` on the raw template file reports **no errors** (it only checks Python syntax), so static analysis misses it entirely.
+
+**Rule**: Any JavaScript string literal inside a plugin template that needs a literal backslash-n (`\n`) as a JS escape sequence MUST use `'\\n'` (double backslash) in the Python source. The Python parser converts `\\` → `\`, producing `\n` (backslash + n) in the rendered HTML, which the JS engine then correctly interprets as a newline escape.
+
+**Rule**: Before writing any JS string literal in a Python `"""..."""` template, ask: "does this contain `\n`, `\t`, `\r`, `\\`, or any other Python escape?" If yes, double all backslashes. `'\\n'` → renders as JS `'\n'`. `'\\t'` → renders as JS `'\t'`. Never write single-backslash escape sequences in JS strings inside Python template strings.
+
+**How to detect**: Scan for the pattern `'\n'` (and similar) in template string regions using:
+```python
+# Any line containing a single-quoted JS string with a Python-processed escape
+re.finditer(r"'\\[ntrfvabx]'", template_source)
+```
+
 ### Plugin theming — MUST follow
 
 Every plugin page MUST use the app's CSS variables and class names. Never invent bespoke colours or button classes.
