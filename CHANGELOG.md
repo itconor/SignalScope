@@ -2,6 +2,16 @@
 
 ---
 
+### Brand Screen plugin v1.3.34 — 2026-05-01
+
+**Fix TV light channels: both at 255 for on, 0 for off; fix polling blocking commands**
+
+- Both the warm-white and white channels are now set to `At 255` when turning on (cold white), and both to `At 0` when turning off — matches the fixture's (0,255) → cold white behaviour
+- **Critical fix**: TV state polling (DMX reads from CueServer) was running inline in the command-fetch loop. A slow or unresponsive CueServer on `/get.cgi?req=out` could block the loop for up to 8 s on every cycle, preventing TV light and brand-change commands from executing. TV polling is now in its own `bs-tv-state-client` daemon thread; the command loop is never blocked
+- DMX "on" detection now checks either channel (warm or white) so state sync is correct regardless of which channel is responding
+
+---
+
 ### Brand Screen plugin v1.3.33 — 2026-05-01
 
 **Fix TV light on-value — use DMX 255 not 100**
