@@ -2,6 +2,16 @@
 
 ---
 
+### Brand Screen plugin v1.3.64 — 2026-05-01
+
+**Fix: WebRTC video — synthetic answer approach to bypass Chrome answer-validation strictness**
+
+Root cause of persistent `a=fmtp:109 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f Invalid SDP line`: Chrome's answer-validation path is stricter than its offer-parsing path. Chrome generates `42e01f` for PT 109 H264 in its own offer (accepted by `setLocalDescription`), but then rejects the identical value when it appears in a remote answer passed to `setRemoteDescription`. All previous filtering approaches failed because the problem is not in SRS's SDP structure — it's in Chrome's asymmetric validation.
+
+Fix: replaced the SRS-answer filtering approach with a synthetic answer built from Chrome's own offer SDP as the codec template. Chrome cannot reject its own codec lines. Only SRS's ICE/DTLS credentials are substituted in; the direction is flipped (`recvonly→sendonly`); `a=ice-lite` is added at session level (SRS is an ICE-lite passive agent). A final pass forces `profile-level-id=42e01f→42001f` as defence-in-depth. SRS's ICE candidates are added separately via `addIceCandidate()` as before.
+
+---
+
 ### Brand Screen plugin v1.3.63 — 2026-05-01
 
 **Fix: JSEP m= section count mismatch — remove audio transceiver, reject non-video sections**

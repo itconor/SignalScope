@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.63",
+    "version":  "1.3.64",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3318,124 +3318,77 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
           })
           .then(function(a){
             if(a.answer){
-              console.log('[BS-video] SDP answer received! Setting remote description...');
-              // SRS WHEP generates a non-JSEP-compliant answer:
-              //   - Full audio+video m= sections even for a video-only offer
-              //   - Audio codec attrs (rtpmap/fmtp/rtcp-fb/ssrc) mixed into the video section
-              //   - ICE candidates and codec attrs at SESSION level (Chrome requires media level)
-              // We surgically clean the SDP: keep only video m= sections, strip all
-              // audio contamination, fix session-level attrs, inject candidates separately.
-              var _sdp=a.answer.replace(/\\r?\\n/g,'\\r\\n');
-              var _lines=_sdp.split('\\r\\n');
-              // Pass 0: build PT→codec map and collect video section mids
-              var _rtpmap={},_videoMids=[];
-              var _p0type=null,_p0mid=null;
-              for(var _fi=0;_fi<_lines.length;_fi++){
-                var _fl=_lines[_fi];
-                if(_fl.indexOf('m=')===0){
-                  _p0type=_fl.split(' ')[0].slice(2); // 'video','audio','application'...
-                  _p0mid=null;
-                }
-                if(_fl.indexOf('a=mid:')===0&&_p0mid===null){
-                  _p0mid=_fl.slice(6).trim();
-                  if(_p0type==='video'&&_videoMids.indexOf(_p0mid)<0)_videoMids.push(_p0mid);
-                }
-                if(_fl.indexOf('a=rtpmap:')===0){
-                  var _rp=_fl.slice(9).split(' ');
-                  if(_rp.length>=2)_rtpmap[_rp[0]]=_rp[1].split('/')[0].toLowerCase();
+              // SYNTHETIC ANSWER APPROACH:
+              // Chrome rejects profile-level-id=42e01f in remote answers even though it puts the
+              // same value in its own offers. Root cause: Chrome's answer-validation path is stricter
+              // than its offer-parsing path. Fix: build the answer using Chrome's OWN offer SDP as
+              // the codec template (Chrome cannot reject its own lines), then substitute SRS's ICE/
+              // DTLS credentials and flip the direction. Final pass forces 42e01f→42001f as defence.
+              //
+              // Step 1: Extract ICE/DTLS credentials and ICE candidates from SRS's raw answer
+              var _aL=a.answer.replace(/\\r?\\n/g,'\\r\\n').split('\\r\\n');
+              var _sU='',_sP='',_sFP='',_sST='a=setup:passive',_cands=[];
+              var _aVid=false;
+              for(var _ai=0;_ai<_aL.length;_ai++){
+                var _al=_aL[_ai];
+                if(_al.indexOf('m=')===0){ _aVid=(_al.indexOf('m=video')===0); }
+                // Prefer media-level credentials; fall back to session-level
+                if(_al.indexOf('a=ice-ufrag:')===0&&(_aVid||!_sU)){ _sU=_al; }
+                if(_al.indexOf('a=ice-pwd:')===0&&(_aVid||!_sP)){ _sP=_al; }
+                if(_al.indexOf('a=fingerprint:')===0&&(_aVid||!_sFP)){ _sFP=_al; }
+                if(_al.indexOf('a=setup:')===0&&_aVid){ _sST=_al; }
+                if(_al.indexOf('a=candidate:')===0){
+                  _cands.push({candidate:_al.slice(2),sdpMid:'0',sdpMLineIndex:0});
                 }
               }
-              var _firstVidMid=_videoMids[0]||'0';
-              // Video codecs — PTs not in this list are audio/non-video
-              var _vCdcs=['h264','vp8','vp9','av1','h265','hevc','rtx','red','ulpfec','flexfec-03'];
-              function _isVid(pt){var c=_rtpmap[pt];return !c||_vCdcs.indexOf(c)>=0;}
-              function _getPT(l){return l.slice(l.indexOf(':')+1).trim().split(/\\s+/)[0];}
-              // Session-level a= attrs Chrome accepts
-              var _sOK=['a=ice-lite','a=fingerprint:','a=setup:','a=msid-semantic:','a=extmap-allow-mixed'];
-              function _sessOk(l){for(var _k=0;_k<_sOK.length;_k++)if(l.indexOf(_sOK[_k])===0)return true;return false;}
-              // Main pass
-              var _cands=[],_curMid=null,_curMIdx=-1,_filtered=[],_inMedia=false,_inVidSec=false,_stripped=[];
-              for(var _li=0;_li<_lines.length;_li++){
-                var _ln=_lines[_li];
-                if(_ln.indexOf('m=')===0){
-                  _curMIdx++;_curMid=null;_inMedia=true;
-                  _inVidSec=(_ln.indexOf('m=video')===0);
-                  if(_inVidSec){
-                    // Strip any non-video PTs mixed into the video m= line
-                    var _mp=_ln.split(' '),_allPTs=_mp.slice(3);
-                    var _vidPTs=_allPTs.filter(function(p){return _isVid(p);});
-                    if(_vidPTs.length<_allPTs.length){
-                      _stripped.push('m=video removed PTs:'+_allPTs.filter(function(p){return!_isVid(p);}).join(','));
-                      _ln=_mp.slice(0,3).join(' ')+(_vidPTs.length?' '+_vidPTs.join(' '):'');
-                    }
-                    _filtered.push(_ln);
-                  } else {
-                    // Non-video section: emit a REJECTED m= (port=0) so JSEP m= count matches.
-                    // JSEP requires answer to have the same m= sections as the offer in the same
-                    // order; dropping entirely leaves a count mismatch → Chrome fails to validate.
-                    var _mrej=_ln.split(' ');
-                    _filtered.push(_mrej[0]+' 0 '+(_mrej[2]||'UDP/TLS/RTP/SAVPF')+' 0');
-                    _stripped.push('rejected '+_mrej[0]+' (port=0)');
-                  }
-                  continue; // m= line already handled
-                }
-                // Inside non-video m= section: keep only c= and a=mid: for rejected section validity
-                if(_inMedia&&!_inVidSec){
-                  if(_ln.indexOf('c=')===0){ _filtered.push(_ln); }
-                  else if(_ln.indexOf('a=mid:')===0){
-                    _curMid=_ln.slice(6).trim();
-                    _filtered.push(_ln);
-                    _filtered.push('a=inactive');
-                  }
+              console.log('[BS-video] SRS creds ok — ufrag='+(_sU?'yes':'NO')+
+                ' fp='+(_sFP?'yes':'NO')+' cands='+_cands.length);
+              // Step 2: Build synthetic answer from Chrome's own offer SDP
+              // Session section: keep structural lines + a=ice-lite (SRS is ICE-lite passive agent)
+              // Video section:   keep Chrome's codec lines; substitute SRS ICE/DTLS credentials
+              var _oL=(pc.localDescription.sdp||'').replace(/\\r?\\n/g,'\\r\\n').split('\\r\\n');
+              var _syn=[],_oVid=false,_gotT=false;
+              for(var _oi=0;_oi<_oL.length;_oi++){
+                var _ol=_oL[_oi];
+                if(_ol.indexOf('m=')===0){
+                  if(_ol.indexOf('m=video')===0){ _oVid=true; _syn.push(_ol); }
+                  else { _oVid=false; } // skip non-video sections (offer is video-only)
                   continue;
                 }
-                if(_ln.indexOf('a=mid:')===0)_curMid=_ln.slice(6).trim();
-                if(_ln.indexOf('a=candidate:')===0){
-                  _cands.push({candidate:_ln.slice(2),
-                               sdpMid:(_curMIdx<0||!_curMid?_firstVidMid:_curMid),
-                               sdpMLineIndex:0});
-                } else if(_ln.indexOf('a=end-of-candidates')===0||_ln.indexOf('a=ssrc:')===0){
-                  _stripped.push(_ln.slice(0,48));
-                } else if(!_inMedia&&_ln.indexOf('a=group:BUNDLE')===0){
-                  // Rewrite BUNDLE to only reference video mids
-                  _filtered.push('a=group:BUNDLE '+_videoMids.join(' '));
-                } else if(!_inMedia&&_ln.indexOf('a=')===0&&!_sessOk(_ln)){
-                  _stripped.push(_ln.slice(0,48));
-                } else if(_inMedia&&(_ln.indexOf('a=rtpmap:')===0||_ln.indexOf('a=fmtp:')===0||_ln.indexOf('a=rtcp-fb:')===0)){
-                  if(!_isVid(_getPT(_ln))){_stripped.push(_ln.slice(0,40));}
-                  else{_filtered.push(_ln);}
+                if(!_oVid){
+                  // Session section: keep v=/o=/s=/t=, add a=ice-lite after t=, keep BUNDLE/msid
+                  if(_ol.match(/^[vost]=/)){
+                    _syn.push(_ol);
+                    if(_ol.indexOf('t=')===0&&!_gotT){ _gotT=true; _syn.push('a=ice-lite'); }
+                  } else if(_ol.indexOf('a=group:BUNDLE')===0){
+                    _syn.push('a=group:BUNDLE 0');
+                  } else if(_ol.indexOf('a=msid-semantic:')===0||
+                             _ol.indexOf('a=extmap-allow-mixed')===0){
+                    _syn.push(_ol);
+                  }
+                  // Drop all other session-level lines (browser-specific offer attrs)
                 } else {
-                  _filtered.push(_ln);
+                  // Video section: Chrome's codec lines with SRS credentials substituted
+                  if(_ol.indexOf('a=recvonly')===0){ _syn.push('a=sendonly'); }
+                  else if(_ol.indexOf('a=ice-ufrag:')===0){ _syn.push(_sU||_ol); }
+                  else if(_ol.indexOf('a=ice-pwd:')===0){ _syn.push(_sP||_ol); }
+                  else if(_ol.indexOf('a=fingerprint:')===0){ _syn.push(_sFP||_ol); }
+                  else if(_ol.indexOf('a=setup:')===0){ _syn.push(_sST); }
+                  else if(_ol.indexOf('a=candidate:')===0||
+                          _ol.indexOf('a=end-of-candidates')===0){} // injected via addIceCandidate
+                  else { _syn.push(_ol); }
                 }
               }
-              if(_stripped.length)console.log('[BS-video] stripped: '+_stripped.join(' | '));
-              // Sync answer fmtp with Chrome offer fmtp to fix profile-level-id mismatch.
-              // SRS generates 42e01f (constraint byte 0xe0); Chrome may have offered 42001f
-              // or similar — Chrome's ParseProfileLevelId rejects unrecognised constraint bytes.
-              var _ofs_=pc.localDescription.sdp.replace(/\\r?\\n/g,'\\r\\n').split('\\r\\n');
-              var _ofv_=false,_ofFm_={};
-              for(var _i_=0;_i_<_ofs_.length;_i_++){
-                var _ol_=_ofs_[_i_];
-                if(_ol_.indexOf('m=video')===0)_ofv_=true;
-                else if(_ol_.indexOf('m=')===0)_ofv_=false;
-                if(_ofv_&&_ol_.indexOf('a=fmtp:')===0){var _pfp_=_getPT(_ol_);_ofFm_[_pfp_]=_ol_;}
-              }
-              console.log('[BS-video] offer-fmtp: '+JSON.stringify(_ofFm_));
-              _filtered=_filtered.map(function(_fl2_){
-                if(_fl2_.indexOf('a=fmtp:')===0){
-                  var _pfp2_=_getPT(_fl2_);
-                  // Use Chrome's own offered fmtp so the profile exactly matches what Chrome accepted
-                  if(_ofFm_[_pfp2_]){console.log('[BS-video] fmtp:'+_pfp2_+' replaced from offer');return _ofFm_[_pfp2_];}
-                  // Fallback: replace SRS 42e01f with 42001f (standard Constrained Baseline)
-                  return _fl2_.replace('profile-level-id=42e01f','profile-level-id=42001f');
-                }
-                return _fl2_;
+              // Step 3: Force 42e01f→42001f (Chrome rejects 42e01f in remote answers)
+              _syn=_syn.map(function(_sl_){
+                return _sl_.indexOf('profile-level-id=42e01f')>=0
+                  ? _sl_.replace(/profile-level-id=42e01f/g,'profile-level-id=42001f') : _sl_;
               });
-              console.log('[BS-video] '+_cands.length+' cands, vidMid='+_firstVidMid+', lines='+_filtered.length);
-              console.log('[BS-video] FINAL SDP:\\n'+_filtered.join('\\n'));
-              return pc.setRemoteDescription({type:'answer',sdp:_filtered.join('\\r\\n')})
+              console.log('[BS-video] synth answer: '+_syn.length+' lines, '+_cands.length+' cands');
+              console.log('[BS-video] SYNTH SDP:\\n'+_syn.join('\\n'));
+              return pc.setRemoteDescription({type:'answer',sdp:_syn.join('\\r\\n')})
                 .then(function(){
-                  console.log('[BS-video] setRemoteDescription OK — injecting '+_cands.length+' ICE candidates');
+                  console.log('[BS-video] setRemoteDescription OK — injecting '+_cands.length+' ICE cands');
                   _cands.forEach(function(e){
                     pc.addIceCandidate(e)
                       .catch(function(err){console.warn('[BS-video] addIceCandidate err:',err,e.candidate);});
