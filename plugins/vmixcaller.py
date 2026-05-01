@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.8.0",
+    "version": "1.8.1",
 }
 
 import os
@@ -4158,6 +4158,74 @@ def register(app, ctx):
             target=_video_relay_loop, args=(monitor, hub_url),
             daemon=True, name="VmixCallerVideoRelay",
         ).start()
+
+    # ── Brand Screen WHEP relay thread ────────────────────────────────────────
+    # When a Brand Screen kiosk page (HTTPS hub) needs to establish a WebRTC
+    # connection to the local SRS bridge (HTTP LAN), mixed-content policy blocks
+    # the direct fetch.  The hub stores the SDP offer; this thread picks it up,
+    # POSTs it to the local SRS bridge (HTTP → HTTP, no mixed-content), and
+    # returns the SDP answer to the hub.  The browser then gets the answer and
+    # WebRTC ICE connects directly browser ↔ SRS over UDP.
+    # vmixcaller is already installed on every node that has an SRS bridge, so
+    # this piggybacks on the existing vmixcaller client without needing a separate
+    # brandscreen installation on the client.
+    if mode in ("client", "both") and hub_url:
+        _vc_site = (getattr(getattr(cfg_ss, "hub", None), "site_name", "") or "").strip()
+        if _vc_site:
+            def _bs_whep_relay_thread(hub_url=hub_url, site=_vc_site):
+                import urllib.request as _ur
+                import urllib.error   as _ue
+                _cmd_url  = f"{hub_url}/api/brandscreen/whep_cmd"
+                _fail_log = False
+                monitor.log(f"[vmixcaller] BS-WHEP relay poller started "
+                            f"(site={site}, hub={hub_url})", "info")
+                while True:
+                    try:
+                        req = _ur.Request(_cmd_url, headers={"X-Site": site})
+                        with _ur.urlopen(req, timeout=6) as r:
+                            d = json.loads(r.read())
+                        _fail_log = False
+                        relay_id  = d.get("relay_id", "")
+                        whep_url  = d.get("whep_url",  "")
+                        sdp_offer = d.get("sdp",       "")
+                        if relay_id and whep_url and sdp_offer:
+                            monitor.log(f"[vmixcaller] BS-WHEP relay {relay_id[:8]}… "
+                                        f"→ forwarding to {whep_url}", "info")
+                            try:
+                                fwd = _ur.Request(
+                                    whep_url,
+                                    data=sdp_offer.encode(),
+                                    method="POST",
+                                    headers={"Content-Type": "application/sdp"},
+                                )
+                                with _ur.urlopen(fwd, timeout=10) as resp:
+                                    answer = resp.read().decode()
+                                monitor.log(f"[vmixcaller] BS-WHEP SRS answered "
+                                            f"({len(answer)} bytes)", "info")
+                            except (_ue.HTTPError, _ue.URLError, Exception) as exc:
+                                monitor.log(f"[vmixcaller] BS-WHEP SRS POST failed: {exc}", "warn")
+                                answer = ""
+                            # Return answer (or empty string on failure) to hub
+                            done_req = _ur.Request(
+                                f"{hub_url}/api/brandscreen/whep_done/{relay_id}",
+                                data=(answer or "").encode(),
+                                method="POST",
+                                headers={"Content-Type": "text/plain",
+                                         "X-Site": site},
+                            )
+                            try:
+                                _ur.urlopen(done_req, timeout=5).close()
+                            except Exception as exc:
+                                monitor.log(f"[vmixcaller] BS-WHEP done POST failed: {exc}", "warn")
+                    except Exception as exc:
+                        if not _fail_log:
+                            monitor.log(f"[vmixcaller] BS-WHEP relay poll failed "
+                                        f"({_cmd_url}): {exc}", "warn")
+                            _fail_log = True
+                    time.sleep(3)
+
+            threading.Thread(target=_bs_whep_relay_thread, daemon=True,
+                             name="VmixCallerBSWhepRelay").start()
 
     def _tpl_inst_vars(cfg: dict) -> dict:
         """Common template vars for instance selector rendering."""

@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.49",
+    "version":  "1.3.50",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3166,7 +3166,7 @@ var _showClock  = {{show_clock|lower}};
 var _showOair   = {{show_on_air|lower}};
 var _showNP     = {{show_now_playing|lower}};
 var _levelKey   = '{{level_key|e}}';   // "site|stream" or ""
-var _videoUrl   = '{{video_url|e}}';   // WHEP endpoint URL for video brand (empty = not video)
+var _videoUrl   = {{video_url|tojson}};   // WHEP endpoint URL for video brand (empty = not video)
 var _csrfToken  = (document.querySelector('meta[name="csrf-token"]')||{}).content||'';
 // Full-screen logo mode — when true, all backgrounds/animations/NP are suppressed.
 // Takeovers still work.  SSE reload still works.

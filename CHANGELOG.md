@@ -2,6 +2,24 @@
 
 ---
 
+### vMix Caller plugin v1.8.1 — 2026-05-01
+
+**Add: Brand Screen WHEP relay client thread**
+
+vmixcaller is already installed on every node that has an SRS bridge. Adding the WHEP relay task poller here means the brand screen video relay works without needing brandscreen installed on the client node.
+
+When `mode in ("client", "both")` and a hub URL is configured, a new `VmixCallerBSWhepRelay` thread polls `hub_url/api/brandscreen/whep_cmd` (X-Site auth, same as existing hub polling) every 3 seconds. When a relay task arrives, it POSTs the SDP offer to the local SRS bridge (HTTP → HTTP, no mixed-content issue) and returns the answer to the hub via `whep_done`. The brand screen browser then applies the answer and WebRTC ICE connects directly browser ↔ SRS over UDP.
+
+---
+
+### Brand Screen plugin v1.3.50 — 2026-05-01
+
+**Fix: `&amp;` encoding bug corrupts WHEP URL in JS**
+
+`{{video_url|e}}` used the Jinja2 HTML-escape filter inside a JavaScript string. `&` in the URL (e.g. `?app=live&stream=studio4`) was encoded to `&amp;`, so `_videoUrl` in JS contained `http://...?app=live&amp;stream=studio4`. SRS would have received `amp;stream=studio4` as a malformed second query param and returned an error. Fixed by switching to `{{video_url|tojson}}` which produces a properly JSON-encoded JS string literal without HTML entity substitution.
+
+---
+
 ### Brand Screen plugin v1.3.49 — 2026-05-01
 
 **Debug + fix: WHEP relay client poller silent failures + "both" mode not starting**
