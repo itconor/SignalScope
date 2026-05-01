@@ -2,6 +2,23 @@
 
 ---
 
+### vMix Caller plugin v1.8.0 — 2026-05-01
+
+**Fix: SRS bridge SRT not enabled — default rtc.conf has no srt_server block**
+
+Root cause: the default `conf/rtc.conf` bundled with `ossrs/srs:5` has no `srt_server` block. Docker exposes port 10080/UDP via `-p`, so vMix SRT handshake packets physically arrive at the container, but SRS never binds to that port internally and silently discards every packet. The stream shows `publish.active=false` and `frames=0` indefinitely.
+
+Fix: `_srs_start()` now calls `_srs_write_config()` before `docker run`. This writes a corrected `rtc.conf` to `/opt/signalscope/srs/rtc.conf` on the host with:
+- `srt_server { enabled on; listen 10080; }` — SRT input
+- `vhost.__defaultVhost__.srt { enabled on; srt_to_rtmp on; }` — bridge SRT→RTMP
+- `vhost.__defaultVhost__.rtc { rtmp_to_rtc on; }` — bridge RTMP→WebRTC
+
+The config is bind-mounted into the container (`-v /opt/signalscope/srs/rtc.conf:/usr/local/srs/conf/rtc.conf:ro`) so it survives container image updates without needing to exec into the container.
+
+Also fixed: vMix stream ID in the instructions updated to `#!::r=live/caller,m=publish` (confirmed from live SRS logs — vMix sends `r=` not `h=`).
+
+---
+
 ### Brand Screen plugin v1.3.42 — 2026-05-01
 
 **Fix: remove all remaining U+2026 ellipsis characters from JS strings**

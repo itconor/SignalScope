@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.7.9",
+    "version": "1.8.0",
 }
 
 import os
@@ -849,14 +849,75 @@ def _compute_video_url(cfg: dict, is_hub_node: bool) -> str:
 
 _SRS_CONTAINER    = "srs"
 _SRS_IMAGE        = "ossrs/srs:5"
-# Static docker flags — ports only; CANDIDATE env var is added dynamically
-# at start time so SRS advertises the host's real LAN IP in WebRTC ICE candidates.
+# Persistent SRS config written to the host filesystem so it survives container
+# recreations.  The Start SRS path writes this file before docker run, then
+# bind-mounts it into the container at the path SRS reads on startup.
+_SRS_HOST_CFG_DIR  = os.path.join(os.path.dirname(_BASE_DIR), "srs")
+_SRS_HOST_CFG_PATH = os.path.join(_SRS_HOST_CFG_DIR, "rtc.conf")
+_SRS_CONF_CONTENT  = """\
+# SRS config — SRT + WebRTC (SRT -> RTMP -> RTC pipeline)
+# Written by vMix Caller plugin on Start SRS. Edit here to customise.
+listen              1935;
+max_connections     1000;
+daemon              off;
+srs_log_tank        console;
+
+http_server {
+    enabled         on;
+    listen          8080;
+    dir             ./objs/nginx/html;
+}
+
+http_api {
+    enabled         on;
+    listen          1985;
+}
+
+stats {
+    network         0;
+}
+
+srt_server {
+    enabled         on;
+    listen          10080;
+    maxbw           1000000000;
+    connect_timeout 4000;
+    peerlatency     0;
+    recvlatency     0;
+    mix_correct     on;
+}
+
+rtc_server {
+    enabled on;
+    listen 8000;
+    candidate $CANDIDATE;
+}
+
+vhost __defaultVhost__ {
+    srt {
+        enabled     on;
+        srt_to_rtmp on;
+    }
+    rtc {
+        enabled     on;
+        rtmp_to_rtc on;
+        rtc_to_rtmp off;
+    }
+    http_remux {
+        enabled     on;
+        mount       [vhost]/[app]/[stream].flv;
+    }
+}
+"""
+
+# Static docker flags — ports and config bind-mount.
+# CANDIDATE env var is added dynamically in _srs_start().
 _SRS_DOCKER_FLAGS = [
     "-d", "--name", _SRS_CONTAINER, "--restart", "unless-stopped",
     "-p", "10080:10080/udp",   # SRT input from vMix
     "-p", "8080:8080",          # HTTP server (SRS player page, HLS)
-    "-p", "1935:1935",          # RTMP (optional)
-    "-p", "1985:1985",          # HTTP API + WHEP endpoint  ← required for webrtc:// URLs
+    "-p", "1935:1935",          # RTMP (internal pipeline)
+    "-p", "1985:1985",          # HTTP API + WHEP endpoint
     "-p", "8000:8000/udp",     # WebRTC media (SRTP/ICE)
 ]
 _SRS_IMAGE_CMD    = [_SRS_IMAGE, "./objs/srs", "-c", "conf/rtc.conf"]
@@ -941,12 +1002,21 @@ def _srs_status() -> dict:
                 "status_text": "error", "logs": str(e)}
 
 
+def _srs_write_config() -> None:
+    """Write the SRS config to the host filesystem so it can be bind-mounted."""
+    import os as _os
+    _os.makedirs(_SRS_HOST_CFG_DIR, exist_ok=True)
+    with open(_SRS_HOST_CFG_PATH, "w") as _f:
+        _f.write(_SRS_CONF_CONTENT)
+
+
 def _srs_start() -> dict:
     """Start the SRS container. Pulls image on first run.
 
     Always removes any existing stopped container before recreating so that
-    port changes (e.g. adding 1985) and a fresh CANDIDATE IP take effect.
-    Running containers are left alone.
+    port changes and a fresh CANDIDATE IP take effect.  Writes the SRS config
+    to the host first so SRT → RTMP → WebRTC bridging is always enabled.
+    Running containers are left alone (use Stop then Start to apply config changes).
     """
     docker = _docker_cmd()
     if not docker:
@@ -958,14 +1028,21 @@ def _srs_start() -> dict:
         if st.get("running"):
             return {"ok": True, "msg": "SRS already running"}
 
-        # Remove any existing stopped container so new port/env flags take effect
+        # Remove any existing stopped container so new port/env/config flags take effect
         if st.get("exists"):
             _sp.run(docker + ["rm", "-f", _SRS_CONTAINER],
                     capture_output=True, timeout=15)
 
+        # Write config with SRT + WebRTC pipeline to host, bind-mount into container
+        try:
+            _srs_write_config()
+            vol_flag = ["-v", f"{_SRS_HOST_CFG_PATH}:/usr/local/srs/conf/rtc.conf:ro"]
+        except Exception as _ce:
+            vol_flag = []  # fall back to image default (no SRT) with a warning
+
         # Detect host LAN IP for WebRTC ICE CANDIDATE
         candidate = _srs_candidate_ip()
-        run_args = _SRS_DOCKER_FLAGS + ["-e", f"CANDIDATE={candidate}"] + _SRS_IMAGE_CMD
+        run_args = _SRS_DOCKER_FLAGS + vol_flag + ["-e", f"CANDIDATE={candidate}"] + _SRS_IMAGE_CMD
 
         # Fresh run — may pull image on first use (can take ~60 s)
         r = _sp.run(docker + ["run"] + run_args,
@@ -2666,18 +2743,19 @@ _HUB_TPL = r"""<!DOCTYPE html>
       <div class="cb" style="font-size:12px;color:var(--mu);line-height:1.65">
 
         <p style="font-weight:600;color:var(--tx);margin-bottom:6px">Option A — WebRTC player page <span style="font-weight:400;color:var(--ok)">(recommended)</span></p>
-        <p style="margin-bottom:6px">Run SRS on the same LAN as vMix. If Docker is installed on this machine use the <strong style="color:var(--acc)">SRS Server card below</strong> — it starts the container automatically. Or run manually:</p>
+        <p style="margin-bottom:6px">If Docker is installed on this machine, use the <strong style="color:var(--acc)">SRS Server card below</strong> — it starts the container with the correct config automatically (SRT + WebRTC pipeline). To run manually, first create the config file then mount it:</p>
         <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:8px 10px;font-size:11px;color:#7dd3fc;white-space:pre-wrap;margin:6px 0">docker run -d --name srs --restart unless-stopped \
   -p 10080:10080/udp -p 8080:8080 -p 1935:1935 \
   -p 1985:1985 -p 8000:8000/udp \
   -e CANDIDATE=&lt;LAN_IP_OF_THIS_MACHINE&gt; \
+  -v /opt/signalscope/srs/rtc.conf:/usr/local/srs/conf/rtc.conf:ro \
   ossrs/srs:5 ./objs/srs -c conf/rtc.conf</pre>
-        <p style="font-size:11px;color:var(--wn);margin-top:0;margin-bottom:6px">⚠ Replace <code style="background:#0d1e40;padding:1px 5px;border-radius:3px">CANDIDATE</code> with the LAN IP of the machine running SRS (e.g. <code style="background:#0d1e40;padding:1px 5px;border-radius:3px">192.168.13.2</code>). Without it SRS advertises its Docker-internal IP in WebRTC ICE candidates and video won't connect. The <strong>Start SRS</strong> button below detects the IP automatically.</p>
+        <p style="font-size:11px;color:var(--wn);margin-top:0;margin-bottom:6px">⚠ The default <code>rtc.conf</code> in the SRS image does <strong>not</strong> have SRT enabled — the bind-mount above supplies a corrected config. The <strong>Start SRS</strong> button writes this config automatically. Without it vMix packets arrive but SRS silently discards them.</p>
         <p style="margin-bottom:4px">In vMix → Zoom input → <strong>Output</strong> → enable SRT (<strong>Type: Caller</strong>):</p>
         <ul style="padding-left:16px;margin-bottom:6px">
-          <li><strong style="color:var(--tx)">Hostname</strong> — LAN IP of the SRS machine (e.g. <code style="background:#0d1e40;padding:1px 5px;border-radius:3px">192.168.13.2</code>)</li>
+          <li><strong style="color:var(--tx)">Hostname</strong> — LAN IP of the SRS machine</li>
           <li><strong style="color:var(--tx)">Port</strong> — <code style="background:#0d1e40;padding:1px 5px;border-radius:3px">10080</code></li>
-          <li><strong style="color:var(--tx)">Stream ID</strong> — <code style="background:#0d1e40;padding:1px 5px;border-radius:3px">#!::h=live/caller,m=publish</code></li>
+          <li><strong style="color:var(--tx)">Stream ID</strong> — <code style="background:#0d1e40;padding:1px 5px;border-radius:3px">#!::r=live/caller,m=publish</code></li>
         </ul>
         <p>Set <strong style="color:var(--tx)">Preview URL</strong> below to the SRS WebRTC player page:</p>
         <pre style="background:#0d1e40;border:1px solid var(--bor);border-radius:6px;padding:6px 10px;font-size:11px;color:#7dd3fc;margin:6px 0">http://192.168.13.2:8080/players/rtc_player.html?autostart=true&amp;stream=webrtc://192.168.13.2/live/caller</pre>
