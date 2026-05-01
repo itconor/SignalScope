@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.28",
+    "version":  "1.3.29",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -53,6 +53,9 @@ _cs_admin_lock  = threading.Lock()
 # site → {ts, action, data, error}
 _cs_result: dict = {}
 _cs_result_lock = threading.Lock()
+# TV light on/off state per studio (in-memory; resets on restart)
+_tv_state: dict = {}
+_tv_state_lock  = threading.Lock()
 
 os.makedirs(_LOGO_DIR, exist_ok=True)
 
@@ -176,6 +179,11 @@ def _new_studio():
         # ch_w > 0 enables RGBW — white component extracted from the brand colour.
         # Brightness is per-brand (cs_brightness on the station), NOT per strip.
         "cs_strips": [],
+        # TV / overhead lights — a 2-channel white fixture (CW + WW).
+        # On: ch_white → 100 %, ch_warm → 0.  Off: both → 0.
+        # 0 = channel not fitted / not used.
+        "tv_ch_white": 0,
+        "tv_ch_warm":  0,
     }
 
 def _ensure_api_key(cfg):
@@ -361,7 +369,7 @@ def _cueserver_trigger(studio, station):
     with _cs_lock:
         _cs_pending[cs_site] = {"host": cs_host, "cmd": cs_cmd}
 
-def _cs_colour_cmd(hex_colour, strips, brightness=100):
+def _cs_colour_cmd(hex_colour, strips, brightness=100, fade_secs=1):
     """Build a CueScript command that sets all configured DMX strips from a hex colour.
 
     Each strip is a dict {name, ch_r, ch_g, ch_b, ch_w} where:
@@ -372,6 +380,9 @@ def _cs_colour_cmd(hex_colour, strips, brightness=100):
 
     `brightness` (0–100, default 100) is the per-brand/station brightness and
     applies uniformly to all strips.  It is stored on the station, not the strip.
+
+    `fade_secs` (default 1) appends "Time N" to the command so CueServer fades
+    channels smoothly.  Pass 0 for an immediate snap (e.g. preview testing).
 
     CueScript uses percentage values (0–100), so 255 → 100, 128 → 50, etc.
     """
@@ -399,7 +410,32 @@ def _cs_colour_cmd(hex_colour, strips, brightness=100):
         if ch_b: parts.append(f"Channel {ch_b} At {_pct(b_c)}")
         if ch_w: parts.append(f"Channel {ch_w} At {_pct(w_raw)}")
 
-    return " ".join(parts)
+    if not parts:
+        return ""
+    cmd = " ".join(parts)
+    if fade_secs and fade_secs > 0:
+        cmd += f" Time {fade_secs}"
+    return cmd
+
+
+def _cs_tv_cmd(studio, on):
+    """Build a CueScript command to turn TV/overhead lights on or off.
+
+    On:  ch_white → 100 %, ch_warm → 0 %  (pure cool white at full)
+    Off: ch_white → 0 %,   ch_warm → 0 %
+
+    Returns "" if neither channel is configured.
+    """
+    ch_white = int(studio.get("tv_ch_white") or 0)
+    ch_warm  = int(studio.get("tv_ch_warm")  or 0)
+    if not ch_white and not ch_warm:
+        return ""
+    parts = []
+    if ch_white:
+        parts.append(f"Channel {ch_white} At {'100' if on else '0'}")
+    if ch_warm:
+        parts.append(f"Channel {ch_warm} At 0")
+    return " ".join(parts) + " Time 1"
 
 def _parse_cue_list_xml(raw):
     """Best-effort parser for CueServer's /get.cgi?req=csi XML response.
@@ -644,6 +680,7 @@ main{max-width:1100px;margin:0 auto;padding:24px 20px}
 .sc-switch{padding:12px 18px 16px;border-top:1px solid var(--bor);background:rgba(0,0,0,.12);display:flex;gap:8px;align-items:center}
 .sc-switch select{flex:1;background:#0d1e40;border:1px solid var(--bor);border-radius:8px;color:var(--tx);padding:7px 10px;font-size:13px;font-family:inherit}.sc-switch select:focus{border-color:var(--acc);outline:none}
 .btn-switch{background:var(--acc);color:#fff;border:none;border-radius:8px;padding:7px 18px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;font-family:inherit}.btn-switch:hover{filter:brightness(1.1)}.btn-switch:disabled{opacity:.45;cursor:default;filter:none}
+.btn-tv{background:#1e3a1e;color:#6ee37a;border:1px solid #2d5c2d;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;font-family:inherit;transition:background .15s,color .15s}.btn-tv:hover{filter:brightness(1.15)}.btn-tv.tv-active{background:#22c55e;color:#fff;border-color:#16a34a}.btn-tv:disabled{opacity:.45;cursor:default;filter:none}
 /* ── Brands panel ── */
 .brand-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:12px}
 .brand-card{background:var(--sur);border:1px solid var(--bor);border-radius:10px;padding:10px;display:flex;flex-direction:column;align-items:center;gap:6px}
@@ -885,10 +922,14 @@ function renderStudios(){
     var brandName=st?('<span style="color:'+_esc(brandCol)+'">'+_esc(st.name)+'</span>'):'<span class="sc-unassigned">Nothing assigned</span>';
     var schedBadge=hasSched?'<div class="sc-sched-badge">📅 Scheduled'+(schedBrand?' — '+_esc(schedBrand.name):'')+'</div>':'';
     var opts=_stations.map(function(s){return '<option value="'+s.id+'"'+(sd.station_id===s.id?' selected':'')+'>'+_esc(s.name)+'</option>';}).join('');
+    var hasTv=!!(sd.tv_ch_white||sd.tv_ch_warm);
+    var tvOn=!!(sd._tv_on);
+    var tvBtn=hasTv?('<button class="btn-tv'+(tvOn?' tv-active':'')+'" data-action="tv-toggle" data-sid="'+sd.id+'" title="TV lights">💡 '+(tvOn?'On':'Off')+'</button>'):'';
     return '<div class="studio-card'+(hasSched?' has-sched':'')+'" id="scard-'+sd.id+'">'
       +'<div class="sc-top">'+logoBox+'<div class="sc-info"><div class="sc-studio-name">'+_esc(sd.name)+'</div><div class="sc-brand-name">'+brandName+'</div>'+schedBadge+'</div></div>'
       +'<div class="sc-switch"><select id="sw-'+sd.id+'"><option value="">— choose a brand —</option>'+opts+'</select>'
-      +'<button class="btn-switch" data-sdid="'+sd.id+'">Switch now</button></div></div>';
+      +'<button class="btn-switch" data-sdid="'+sd.id+'">Switch now</button>'
+      +tvBtn+'</div></div>';
   }).join('');
   el.querySelectorAll('.btn-switch').forEach(function(btn){
     btn.addEventListener('click',function(){
@@ -904,6 +945,18 @@ function renderStudios(){
         }).catch(function(){me.disabled=false;_msg('Connection error.',false);});
     });
   });
+}
+function _doTvToggle(sid){
+  var sd=_studios.find(function(s){return s.id===sid;});if(!sd)return;
+  var newOn=!sd._tv_on;
+  _post('/api/brandscreen/studio/'+sid+'/tv_lights',{on:newOn})
+    .then(function(r){return r.json();}).then(function(d){
+      if(d.error){_msg(d.error,false);return;}
+      sd._tv_on=newOn;
+      renderStudios();
+      if(typeof renderStudios==='function') renderStudios();
+      _msg('TV lights '+(newOn?'on':'off')+' ✓',true);
+    }).catch(function(){_msg('Connection error.',false);});
 }
 
 // ── Brand grid ───────────────────────────────────────────────────────────────
@@ -1153,6 +1206,13 @@ _loadActive();setInterval(_loadActive,30000);
     }
   });
 })();
+
+// ── TV lights toggle (delegated — works after every renderStudios() call) ────
+document.addEventListener('click',function(e){
+  var btn=e.target.closest('[data-action="tv-toggle"]');
+  if(!btn) return;
+  _doTvToggle(btn.dataset.sid);
+});
 </script>
 </body>
 </html>"""
@@ -1185,6 +1245,7 @@ body{background:radial-gradient(circle at top,#12376f 0%,var(--bg) 38%,#05101f 1
 @media(max-width:700px){.hdr-powered{display:none}.hdr{padding:12px 16px}}
 .btn{border:none;border-radius:8px;padding:5px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;text-decoration:none;display:inline-block}
 .btn:hover{filter:brightness(1.15)}.bp{background:var(--acc);color:#fff}.bd{background:var(--al);color:#fff}.bg{background:#132040;color:var(--tx)}.bs{font-size:11px;padding:3px 9px}
+.btn-tv{background:#1e3a1e;color:#6ee37a;border:1px solid #2d5c2d;border-radius:8px;padding:3px 9px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;font-family:inherit;transition:background .15s,color .15s}.btn-tv:hover{filter:brightness(1.15)}.btn-tv.tv-active{background:#22c55e;color:#fff;border-color:#16a34a}.btn-tv:disabled{opacity:.45;cursor:default;filter:none}
 main{max-width:960px;margin:0 auto;padding:20px 16px}
 /* ── Onboarding — shown on first visit when no stations/studios exist ── */
 .onboard{background:linear-gradient(135deg,rgba(23,168,255,.09),rgba(23,168,255,.04));border:1px solid rgba(23,168,255,.22);border-radius:18px;padding:28px 32px;margin-bottom:24px}
@@ -1525,6 +1586,10 @@ function renderStudios(){
       +'<div class="studio-assign" style="margin-top:3px">'+assignHtml+'</div>'
       +'</div>'
       +'<div class="sc-actions">'
+      +(function(){
+        var hasTv=!!(sd.tv_ch_white||sd.tv_ch_warm),tvOn=!!(sd._tv_on);
+        return hasTv?'<button class="btn-tv bs'+(tvOn?' tv-active':'')+'" data-action="tv-toggle" data-sid="'+sd.id+'" title="TV lights">💡 '+(tvOn?'On':'Off')+'</button>':'';
+      })()
       +'<button class="btn bg bs" data-action="toggle-sd" data-sid="'+sd.id+'">Edit</button>'
       +'<a class="btn bg bs" href="/brandscreen/studio/'+sd.id+'?token='+sd.token+'" target="_blank">Preview ↗</a>'
       +'<button class="btn bd bs" data-action="del-sd" data-sid="'+sd.id+'">Delete</button>'
@@ -1578,6 +1643,18 @@ function _studioForm(sd){
     +'<span id="sd-cs-status-'+sd.id+'" style="font-size:11px;color:var(--mu)"></span>'
     +'</div>'
     +'<div id="sd-cs-scenes-'+sd.id+'" style="display:none;margin-bottom:12px">'
+    +'</div>'
+    +'<hr class="sep">'
+    +'<div class="slabel">TV Lights <span style="font-weight:400;font-size:10px;text-transform:none;letter-spacing:0;color:var(--mu)">— overhead white light fixture (2-channel CW/WW)</span></div>'
+    +'<div class="grid2" style="margin-bottom:8px">'
+    +'<div class="field"><label>White (CW) Channel</label>'
+    +'<input type="number" id="sd-tv-white-'+sd.id+'" min="0" max="512" value="'+(sd.tv_ch_white||0)+'" style="width:100px">'
+    +'<p class="hint" style="margin-top:4px">DMX channel for cool white. 0 = not used.</p>'
+    +'</div>'
+    +'<div class="field"><label>Warm White (WW) Channel</label>'
+    +'<input type="number" id="sd-tv-warm-'+sd.id+'" min="0" max="512" value="'+(sd.tv_ch_warm||0)+'"  style="width:100px">'
+    +'<p class="hint" style="margin-top:4px">DMX channel for warm white. 0 = not used.</p>'
+    +'</div>'
     +'</div>'
     +'<div class="slabel">Screen URL</div>'
     +'<div class="tok-row" style="margin-bottom:6px"><input type="text" value="'+_esc(sd.token)+'" readonly>'
@@ -1805,6 +1882,8 @@ function _saveSd(sid){
     cueserver_site:_v('sd-cs-site-'+sid)||'',
     cueserver_host:_v('sd-cs-host-'+sid)||'',
     cs_strips:_csGetStrips(sid),
+    tv_ch_white:parseInt(_v('sd-tv-white-'+sid)||'0',10)||0,
+    tv_ch_warm: parseInt(_v('sd-tv-warm-'+sid)||'0', 10)||0,
   }).then(function(r){return r.json();}).then(function(d){
     if(d.error){_msg(d.error,false);return;}
     Object.assign(sd,d.studio); renderStudios(); renderApiRef(); _msg('Saved.',true);
@@ -2064,6 +2143,7 @@ document.addEventListener('click',function(e){
   else if(a==='cs-del-strip')    _csDelStrip(btn);
   else if(a==='cs-fetch-scenes') _csFetchScenes(sid);
   else if(a==='cs-preview')      _csPreview(sid);
+  else if(a==='tv-toggle')       _doTvToggle(sid);
   else if(a==='takeover-send'){
     var _toTitle=(_v('sd-to-title-'+sid)||'').trim();
     var _toText=(_v('sd-to-text-'+sid)||'').trim();
@@ -2086,6 +2166,17 @@ document.addEventListener('click',function(e){
 document.getElementById('add-studio-btn').addEventListener('click',_addStudio);
 document.getElementById('add-station-btn').addEventListener('click',_addStation);
 document.getElementById('logo-input').addEventListener('change',function(){ _doUpload(this.files[0]); });
+function _doTvToggle(sid){
+  var sd=_studios.find(function(s){return s.id===sid;});if(!sd)return;
+  var newOn=!sd._tv_on;
+  _post('/api/brandscreen/studio/'+sid+'/tv_lights',{on:newOn})
+    .then(function(r){return r.json();}).then(function(d){
+      if(d.error){_msg(d.error,false);return;}
+      sd._tv_on=newOn;
+      renderStudios(); renderStations();
+      _msg('TV lights '+(newOn?'on':'off')+' ✓',true);
+    }).catch(function(){_msg('Connection error.',false);});
+}
 
 // ── Onboarding panel ──────────────────────────────────────────────────────
 // Shown when there are no stations AND no studios. Buttons wire to the same
@@ -3490,8 +3581,17 @@ def register(app, ctx):
     @api_auth
     def bs_list():
         cfg = _cfg_load()
+        with _tv_state_lock:
+            tv_snap = dict(_tv_state)
+        studios = cfg.get("studios", [])
+        # Annotate each studio with its current TV light state
+        studios_out = []
+        for sd in studios:
+            sd_out = dict(sd)
+            sd_out["_tv_on"] = tv_snap.get(sd.get("id", ""), False)
+            studios_out.append(sd_out)
         return jsonify({
-            "studios":  cfg.get("studios", []),
+            "studios":  studios_out,
             "stations": [{k: v for k, v in s.items() if not k.startswith("_")}
                          for s in cfg.get("stations", [])],
         })
@@ -3668,6 +3768,12 @@ def register(app, ctx):
                   "cueserver_site", "cueserver_host", "cs_zone_name"):
             if k in data:
                 s[k] = str(data[k])[:200] if data[k] is not None else ""
+        for k in ("tv_ch_white", "tv_ch_warm"):
+            if k in data:
+                try:
+                    s[k] = max(0, min(512, int(data[k])))
+                except (TypeError, ValueError):
+                    s[k] = 0
         # cs_strips: validate each strip's channel numbers
         # Brightness is per-brand/station (cs_brightness), NOT per strip —
         # strip dicts contain channel assignments only.
@@ -3870,6 +3976,47 @@ def register(app, ctx):
             return jsonify({"active": True, "title": t.get("title", ""),
                             "text": t.get("text", ""), "ts": t.get("ts", 0)})
         return jsonify({"active": False})
+
+    # ── TV lights on/off ──────────────────────────────────────────────────────
+    @app.post("/api/brandscreen/studio/<studio_id>/tv_lights")
+    @login_required
+    @csrf_protect
+    def bs_tv_lights(studio_id):
+        """Turn the TV/overhead lights on or off for a studio.
+
+        Body: {"on": true|false}
+
+        Queues a CueScript command via the admin channel (takes priority over
+        brand-change fire commands, doesn't race or replace them).
+        """
+        cfg    = _cfg_load()
+        studio = _get_studio(cfg, studio_id)
+        if not studio:
+            return jsonify({"error": "Studio not found"}), 404
+        cs_site = (studio.get("cueserver_site") or "").strip()
+        cs_host = (studio.get("cueserver_host") or "").strip()
+        if not cs_site or not cs_host:
+            return jsonify({"error": "No CueServer configured for this studio"}), 400
+        data = request.get_json(force=True) or {}
+        on   = bool(data.get("on", False))
+        cmd  = _cs_tv_cmd(studio, on)
+        if not cmd:
+            return jsonify({"error": "No TV light channels configured for this studio"}), 400
+        with _cs_admin_lock:
+            if cs_site not in _cs_admin_queue:
+                _cs_admin_queue[cs_site] = []
+            _cs_admin_queue[cs_site].append({"action": "tv_lights", "host": cs_host, "cmd": cmd})
+        with _tv_state_lock:
+            _tv_state[studio_id] = on
+        return jsonify({"ok": True, "on": on})
+
+    @app.get("/api/brandscreen/studio/<studio_id>/tv_lights")
+    @login_required
+    def bs_tv_lights_get(studio_id):
+        """Return current TV light state for a studio."""
+        with _tv_state_lock:
+            on = _tv_state.get(studio_id, False)
+        return jsonify({"on": on})
 
     # ── Mic-live state query (used on page load to restore state) ─────────────
     @app.get("/api/brandscreen/studio/<studio_id>/mic_state")
@@ -4122,7 +4269,7 @@ def register(app, ctx):
 
             while True:
                 try:
-                    _time.sleep(5)
+                    _time.sleep(1)
                     req = _ureq.Request(_poll_url, headers={"X-Site": _cs_site})
                     with _ureq.urlopen(req, timeout=8) as resp:
                         d = json.loads(resp.read())
@@ -4159,6 +4306,12 @@ def register(app, ctx):
                         _post_result("preview_colour",
                                      data={"sent": d.get("cs_cmd", "")},
                                      error=err or "")
+
+                    # ── TV lights on/off ──────────────────────────────────────
+                    elif action == "tv_lights":
+                        if host:
+                            _cs_exe(host, d.get("cmd", ""))
+                        # no response needed
 
                     # ── Admin: set colour + Record Cue N ──────────────────────
                     elif action == "record_cue":

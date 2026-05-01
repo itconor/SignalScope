@@ -2,6 +2,27 @@
 
 ---
 
+### Brand Screen plugin v1.3.29 — 2026-05-01
+
+**1s fade on light changes · faster CueServer poll · TV lights on/off**
+
+**1-second fade**
+- All brand-colour DMX commands now include `Time 1` at the end so CueServer fades smoothly instead of snapping. Preview button still fires instantly (no fade) for test purposes.
+- TV lights commands also fade over 1 second.
+
+**Faster CueServer poll**
+- Client poller reduced from 5 s to 1 s sleep — brand and TV light changes now land on CueServer within ~1 s of clicking instead of up to 5 s.
+
+**TV lights (per studio)**
+- Each studio can now have two DMX channels configured: **White (CW)** and **Warm White (WW)**.
+- On state: white channel at 100%, warm white at 0%. Off state: both at 0%. Fades over 1 s.
+- Admin: configure channels in the studio settings form under the new **TV Lights** section.
+- **💡 On/Off button** appears on every studio card in both the admin tab and the producer view, but only when TV light channels are configured. Green/lit when on; dark when off. State is tracked in-memory on the hub.
+- TV light commands use the admin queue (separate from brand-change commands) so they never race each other.
+- New `POST /api/brandscreen/studio/<id>/tv_lights` endpoint with `{on: bool}` and matching `GET` for state query.
+
+---
+
 ### Brand Screen plugin v1.3.28 — 2026-05-01
 
 **CueServer LEDs not firing on brand change via studio Save button (fixed)**
