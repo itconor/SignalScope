@@ -2,6 +2,16 @@
 
 ---
 
+### Brand Screen plugin v1.3.38 — 2026-05-01
+
+**Re-add TV light state polling with per-host locking**
+
+- Polls CueServer `/get.cgi?req=out` every 15 s from a dedicated `bs-tv-state-client` thread and reports on/off state to the hub so the UI stays in sync with external changes
+- All CueServer access (commands AND state reads) now goes through a per-host `threading.Lock` — the state poll and command execution can never hit the same appliance at the same time, preventing the interference that broke things previously
+- Browser polls `/api/brandscreen/tv_states` every 8 s and updates buttons without a full re-render
+
+---
+
 ### Brand Screen plugin v1.3.37 — 2026-05-01
 
 **Fix TV lights: At 100 not At 255 — CueScript is 0–100 percent**

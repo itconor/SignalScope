@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.37",
+    "version":  "1.3.38",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -4454,24 +4454,100 @@ def register(app, ctx):
         def _cueserver_client_poller():
             import urllib.request as _ureq
             import xml.etree.ElementTree as _ET
-            _poll_url   = f"{_cs_hub}/api/brandscreen/cueserver_cmd"
-            _result_url = f"{_cs_hub}/api/brandscreen/cueserver_result_post"
+            _poll_url      = f"{_cs_hub}/api/brandscreen/cueserver_cmd"
+            _result_url    = f"{_cs_hub}/api/brandscreen/cueserver_result_post"
+            _tv_cfg_url    = f"{_cs_hub}/api/brandscreen/tv_light_channels"
+            _tv_report_url = f"{_cs_hub}/api/brandscreen/tv_state_report"
+
+            # One lock per CueServer host — command exec and state poll share it
+            # so they never hit the same appliance simultaneously.
+            _host_locks: dict = {}
+            _host_locks_mu = threading.Lock()
+
+            def _host_lock(host):
+                with _host_locks_mu:
+                    if host not in _host_locks:
+                        _host_locks[host] = threading.Lock()
+                    return _host_locks[host]
 
             def _cs_get(host, path):
-                """GET from CueServer; returns (text, None) or (None, error)."""
+                """GET from CueServer under the host lock; returns (text, None) or (None, error)."""
                 try:
-                    with _ureq.urlopen(f"http://{host}{path}", timeout=8) as r:
-                        return r.read().decode("utf-8", errors="replace"), None
+                    with _host_lock(host):
+                        with _ureq.urlopen(f"http://{host}{path}", timeout=8) as r:
+                            return r.read().decode("utf-8", errors="replace"), None
                 except Exception as e:
                     return None, str(e)
 
             def _cs_exe(host, cmd_str):
                 cs_url = f"http://{host}/exe.cgi?{_urlparse_cs.urlencode({'cmd': cmd_str})}"
                 try:
-                    _ureq.urlopen(cs_url, timeout=5).close()
+                    with _host_lock(host):
+                        _ureq.urlopen(cs_url, timeout=5).close()
                     return None
                 except Exception as e:
                     return str(e)
+
+            # ── TV state polling thread ───────────────────────────────────────
+            # Reads DMX output levels from CueServer every 15 s and reports
+            # on/off state to the hub.  Uses the per-host lock so it never
+            # overlaps with a command execution on the same appliance.
+            def _tv_state_poller():
+                _tv_cfg_cache: list = []
+                _tv_cfg_next        = 0.0
+                while True:
+                    _time.sleep(15)
+                    try:
+                        now = _time.monotonic()
+                        if now >= _tv_cfg_next:
+                            req = _ureq.Request(_tv_cfg_url,
+                                                headers={"X-Site": _cs_site})
+                            with _ureq.urlopen(req, timeout=5) as r:
+                                _tv_cfg_cache = json.loads(r.read()).get("studios") or []
+                            _tv_cfg_next = now + 60.0
+
+                        if not _tv_cfg_cache:
+                            continue
+
+                        by_host: dict = {}
+                        for sd in _tv_cfg_cache:
+                            by_host.setdefault(sd["cs_host"], []).append(sd)
+
+                        states = []
+                        for cs_host, host_studios in by_host.items():
+                            try:
+                                with _host_lock(cs_host):
+                                    with _ureq.urlopen(
+                                            f"http://{cs_host}/get.cgi?req=out",
+                                            timeout=5) as r:
+                                        raw = r.read().decode("utf-8", errors="replace")
+                            except Exception:
+                                continue
+                            levels = _parse_cs_output_levels(raw)
+                            if not levels:
+                                continue
+                            for sd in host_studios:
+                                tv_on = any(
+                                    levels.get(int(f.get("ch_white") or 0), 0) > 10
+                                    or levels.get(int(f.get("ch_warm")  or 0), 0) > 10
+                                    for f in sd.get("fixtures", [])
+                                    if int(f.get("ch_white") or 0) or int(f.get("ch_warm") or 0)
+                                )
+                                states.append({"studio_id": sd["id"], "tv_on": tv_on})
+
+                        if not states:
+                            continue
+
+                        body = json.dumps({"states": states}).encode()
+                        req  = _ureq.Request(_tv_report_url, data=body, method="POST",
+                                             headers={"Content-Type": "application/json",
+                                                      "X-Site": _cs_site})
+                        _ureq.urlopen(req, timeout=5).close()
+                    except Exception:
+                        pass
+
+            threading.Thread(target=_tv_state_poller, daemon=True,
+                             name="bs-tv-state-client").start()
 
             def _post_result(action, data=None, error=""):
                 try:
