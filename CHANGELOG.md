@@ -2,6 +2,18 @@
 
 ---
 
+### Brand Screen plugin v1.3.30 — 2026-05-01
+
+**TV lights: multiple fixtures per studio**
+
+- TV lights config changed from two flat channel fields to a `tv_lights` array (`[{name, ch_white, ch_warm}]`) — same pattern as DMX colour strips
+- Studio settings form now shows a row per TV light fixture with name, CW channel, WW channel, and a × delete button, plus an **+ Add TV Light** button to add more
+- When **+ Add TV Light** is clicked, channels auto-increment from the last used channel (same as strip auto-fill)
+- On/Off button still controls all fixtures in the studio as a group — a single CueScript command covers all channels
+- **Migration**: studios saved with the old single `tv_ch_white`/`tv_ch_warm` fields continue to work — `_cs_tv_cmd` and the form both fall back to the legacy fields transparently until the studio is re-saved with the new format
+
+---
+
 ### Brand Screen plugin v1.3.29 — 2026-05-01
 
 **1s fade on light changes · faster CueServer poll · TV lights on/off**

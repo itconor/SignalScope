@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.29",
+    "version":  "1.3.30",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -179,11 +179,11 @@ def _new_studio():
         # ch_w > 0 enables RGBW — white component extracted from the brand colour.
         # Brightness is per-brand (cs_brightness on the station), NOT per strip.
         "cs_strips": [],
-        # TV / overhead lights — a 2-channel white fixture (CW + WW).
+        # TV / overhead lights — list of fixtures, each {name, ch_white, ch_warm}.
+        # All fixtures are controlled together (on/off as a group).
         # On: ch_white → 100 %, ch_warm → 0.  Off: both → 0.
         # 0 = channel not fitted / not used.
-        "tv_ch_white": 0,
-        "tv_ch_warm":  0,
+        "tv_lights": [],
     }
 
 def _ensure_api_key(cfg):
@@ -421,20 +421,34 @@ def _cs_colour_cmd(hex_colour, strips, brightness=100, fade_secs=1):
 def _cs_tv_cmd(studio, on):
     """Build a CueScript command to turn TV/overhead lights on or off.
 
+    All fixtures in studio["tv_lights"] are controlled together.
     On:  ch_white → 100 %, ch_warm → 0 %  (pure cool white at full)
     Off: ch_white → 0 %,   ch_warm → 0 %
 
-    Returns "" if neither channel is configured.
+    Falls back to legacy flat tv_ch_white/tv_ch_warm fields so studios
+    saved before the multi-fixture upgrade still work.
+
+    Returns "" if no TV light channels are configured.
     """
-    ch_white = int(studio.get("tv_ch_white") or 0)
-    ch_warm  = int(studio.get("tv_ch_warm")  or 0)
-    if not ch_white and not ch_warm:
+    fixtures = studio.get("tv_lights") or []
+    # Migration: old single-fixture flat fields
+    if not fixtures:
+        ch_w = int(studio.get("tv_ch_white") or 0)
+        ch_ww = int(studio.get("tv_ch_warm") or 0)
+        if ch_w or ch_ww:
+            fixtures = [{"name": "TV Light 1", "ch_white": ch_w, "ch_warm": ch_ww}]
+    if not fixtures:
         return ""
     parts = []
-    if ch_white:
-        parts.append(f"Channel {ch_white} At {'100' if on else '0'}")
-    if ch_warm:
-        parts.append(f"Channel {ch_warm} At 0")
+    for fix in fixtures:
+        ch_white = int(fix.get("ch_white") or 0)
+        ch_warm  = int(fix.get("ch_warm")  or 0)
+        if ch_white:
+            parts.append(f"Channel {ch_white} At {'100' if on else '0'}")
+        if ch_warm:
+            parts.append(f"Channel {ch_warm} At 0")
+    if not parts:
+        return ""
     return " ".join(parts) + " Time 1"
 
 def _parse_cue_list_xml(raw):
@@ -922,7 +936,7 @@ function renderStudios(){
     var brandName=st?('<span style="color:'+_esc(brandCol)+'">'+_esc(st.name)+'</span>'):'<span class="sc-unassigned">Nothing assigned</span>';
     var schedBadge=hasSched?'<div class="sc-sched-badge">📅 Scheduled'+(schedBrand?' — '+_esc(schedBrand.name):'')+'</div>':'';
     var opts=_stations.map(function(s){return '<option value="'+s.id+'"'+(sd.station_id===s.id?' selected':'')+'>'+_esc(s.name)+'</option>';}).join('');
-    var hasTv=!!(sd.tv_ch_white||sd.tv_ch_warm);
+    var hasTv=!!(sd.tv_lights&&sd.tv_lights.length)||(sd.tv_ch_white||sd.tv_ch_warm);
     var tvOn=!!(sd._tv_on);
     var tvBtn=hasTv?('<button class="btn-tv'+(tvOn?' tv-active':'')+'" data-action="tv-toggle" data-sid="'+sd.id+'" title="TV lights">💡 '+(tvOn?'On':'Off')+'</button>'):'';
     return '<div class="studio-card'+(hasSched?' has-sched':'')+'" id="scard-'+sd.id+'">'
@@ -1587,7 +1601,7 @@ function renderStudios(){
       +'</div>'
       +'<div class="sc-actions">'
       +(function(){
-        var hasTv=!!(sd.tv_ch_white||sd.tv_ch_warm),tvOn=!!(sd._tv_on);
+        var hasTv=!!(sd.tv_lights&&sd.tv_lights.length)||(sd.tv_ch_white||sd.tv_ch_warm),tvOn=!!(sd._tv_on);
         return hasTv?'<button class="btn-tv bs'+(tvOn?' tv-active':'')+'" data-action="tv-toggle" data-sid="'+sd.id+'" title="TV lights">💡 '+(tvOn?'On':'Off')+'</button>':'';
       })()
       +'<button class="btn bg bs" data-action="toggle-sd" data-sid="'+sd.id+'">Edit</button>'
@@ -1645,17 +1659,18 @@ function _studioForm(sd){
     +'<div id="sd-cs-scenes-'+sd.id+'" style="display:none;margin-bottom:12px">'
     +'</div>'
     +'<hr class="sep">'
-    +'<div class="slabel">TV Lights <span style="font-weight:400;font-size:10px;text-transform:none;letter-spacing:0;color:var(--mu)">— overhead white light fixture (2-channel CW/WW)</span></div>'
-    +'<div class="grid2" style="margin-bottom:8px">'
-    +'<div class="field"><label>White (CW) Channel</label>'
-    +'<input type="number" id="sd-tv-white-'+sd.id+'" min="0" max="512" value="'+(sd.tv_ch_white||0)+'" style="width:100px">'
-    +'<p class="hint" style="margin-top:4px">DMX channel for cool white. 0 = not used.</p>'
+    +'<div class="slabel">TV Lights <span style="font-weight:400;font-size:10px;text-transform:none;letter-spacing:0;color:var(--mu)">— all fixtures controlled together by the On/Off button</span></div>'
+    +'<div id="sd-tv-lights-'+sd.id+'">'
+    +(function(){
+      var fixes=sd.tv_lights&&sd.tv_lights.length?sd.tv_lights:[];
+      // Migration: show legacy single fixture if no array exists yet
+      if(!fixes.length&&(sd.tv_ch_white||sd.tv_ch_warm)){
+        fixes=[{name:'TV Light 1',ch_white:sd.tv_ch_white||0,ch_warm:sd.tv_ch_warm||0}];
+      }
+      return fixes.map(function(f,i){return _tvLightRowHtml(sd.id,f,i);}).join('');
+    })()
     +'</div>'
-    +'<div class="field"><label>Warm White (WW) Channel</label>'
-    +'<input type="number" id="sd-tv-warm-'+sd.id+'" min="0" max="512" value="'+(sd.tv_ch_warm||0)+'"  style="width:100px">'
-    +'<p class="hint" style="margin-top:4px">DMX channel for warm white. 0 = not used.</p>'
-    +'</div>'
-    +'</div>'
+    +'<button class="btn bg bs" data-action="tv-add-light" data-sid="'+sd.id+'" style="margin-bottom:12px">+ Add TV Light</button>'
     +'<div class="slabel">Screen URL</div>'
     +'<div class="tok-row" style="margin-bottom:6px"><input type="text" value="'+_esc(sd.token)+'" readonly>'
     +'<button class="btn bg bs" data-action="regen-sd-tok" data-sid="'+sd.id+'">Regenerate</button></div>'
@@ -1882,8 +1897,7 @@ function _saveSd(sid){
     cueserver_site:_v('sd-cs-site-'+sid)||'',
     cueserver_host:_v('sd-cs-host-'+sid)||'',
     cs_strips:_csGetStrips(sid),
-    tv_ch_white:parseInt(_v('sd-tv-white-'+sid)||'0',10)||0,
-    tv_ch_warm: parseInt(_v('sd-tv-warm-'+sid)||'0', 10)||0,
+    tv_lights:_tvGetLights(sid),
   }).then(function(r){return r.json();}).then(function(d){
     if(d.error){_msg(d.error,false);return;}
     Object.assign(sd,d.studio); renderStudios(); renderApiRef(); _msg('Saved.',true);
@@ -2041,6 +2055,51 @@ function _csDelStrip(btn){
   if(row) row.remove();
 }
 
+// ── TV light fixture row management ──────────────────────────────────────────
+function _tvLightRowHtml(studio_id, fix, idx){
+  fix=fix||{};
+  return '<div class="cs-strip-row" style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">'
+    +'<input class="tv-lr-name" type="text" value="'+_esc(fix.name||'TV Light '+(idx+1))+'" placeholder="Light name" style="width:90px;font-size:12px">'
+    +'<span style="font-size:10px;color:var(--mu)">CW</span>'
+    +'<input class="tv-lr-cw" type="number" min="0" max="512" value="'+(fix.ch_white||0)+'" style="width:54px;font-size:12px" title="Cool white DMX channel (0=not used)">'
+    +'<span style="font-size:10px;color:var(--mu)">WW</span>'
+    +'<input class="tv-lr-ww" type="number" min="0" max="512" value="'+(fix.ch_warm||0)+'" style="width:54px;font-size:12px" title="Warm white DMX channel (0=not used)">'
+    +'<button class="btn bd bs" data-action="tv-del-light" data-sid="'+_esc(studio_id)+'">×</button>'
+    +'</div>';
+}
+function _tvGetLights(studio_id){
+  var container=document.getElementById('sd-tv-lights-'+studio_id);
+  if(!container) return [];
+  var lights=[];
+  container.querySelectorAll('.cs-strip-row').forEach(function(row){
+    lights.push({
+      name:     (row.querySelector('.tv-lr-name').value||'').trim()||'TV Light',
+      ch_white: parseInt(row.querySelector('.tv-lr-cw').value,10)||0,
+      ch_warm:  parseInt(row.querySelector('.tv-lr-ww').value,10)||0,
+    });
+  });
+  return lights;
+}
+function _tvAddLight(studio_id){
+  var container=document.getElementById('sd-tv-lights-'+studio_id);
+  if(!container) return;
+  var idx=container.querySelectorAll('.cs-strip-row').length;
+  var lastCh=0;
+  container.querySelectorAll('.cs-strip-row').forEach(function(row){
+    var cw=parseInt(row.querySelector('.tv-lr-cw').value,10)||0;
+    var ww=parseInt(row.querySelector('.tv-lr-ww').value,10)||0;
+    lastCh=Math.max(lastCh,cw,ww);
+  });
+  var start=lastCh?lastCh+1:1;
+  var div=document.createElement('div');
+  div.innerHTML=_tvLightRowHtml(studio_id,{name:'TV Light '+(idx+1),ch_white:start,ch_warm:start+1},idx);
+  container.appendChild(div.firstChild);
+}
+function _tvDelLight(btn){
+  var row=btn.closest('.cs-strip-row');
+  if(row) row.remove();
+}
+
 // ── CueServer admin helpers ────────────────────────────────────────────────
 
 function _csRenderScenes(scenes, containerId, onClickCue){
@@ -2144,6 +2203,8 @@ document.addEventListener('click',function(e){
   else if(a==='cs-fetch-scenes') _csFetchScenes(sid);
   else if(a==='cs-preview')      _csPreview(sid);
   else if(a==='tv-toggle')       _doTvToggle(sid);
+  else if(a==='tv-add-light')    _tvAddLight(sid);
+  else if(a==='tv-del-light')    _tvDelLight(btn);
   else if(a==='takeover-send'){
     var _toTitle=(_v('sd-to-title-'+sid)||'').trim();
     var _toText=(_v('sd-to-text-'+sid)||'').trim();
@@ -3768,12 +3829,21 @@ def register(app, ctx):
                   "cueserver_site", "cueserver_host", "cs_zone_name"):
             if k in data:
                 s[k] = str(data[k])[:200] if data[k] is not None else ""
-        for k in ("tv_ch_white", "tv_ch_warm"):
-            if k in data:
-                try:
-                    s[k] = max(0, min(512, int(data[k])))
-                except (TypeError, ValueError):
-                    s[k] = 0
+        if "tv_lights" in data:
+            raw_tv = data["tv_lights"] if isinstance(data["tv_lights"], list) else []
+            clean_tv = []
+            for fix in raw_tv:
+                if not isinstance(fix, dict):
+                    continue
+                def _tch(v):
+                    try: return max(0, min(512, int(v)))
+                    except (TypeError, ValueError): return 0
+                clean_tv.append({
+                    "name":     str(fix.get("name") or "TV Light")[:40],
+                    "ch_white": _tch(fix.get("ch_white")),
+                    "ch_warm":  _tch(fix.get("ch_warm")),
+                })
+            s["tv_lights"] = clean_tv
         # cs_strips: validate each strip's channel numbers
         # Brightness is per-brand/station (cs_brightness), NOT per strip —
         # strip dicts contain channel assignments only.
