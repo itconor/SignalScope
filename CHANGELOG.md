@@ -2,6 +2,16 @@
 
 ---
 
+### Brand Screen plugin v1.3.55 — 2026-05-01
+
+**Fix: SRS answer rejected — a=ssrc:N label:audio-... Invalid SDP line**
+
+After stripping `a=candidate` lines (v1.3.54), Chrome rejected the answer on `a=ssrc:10169 label:audio-d432rh01`. SRS includes audio SSRC attributes even in video-only WHEP answers, sometimes at session level (before any `m=` section) where Chrome disallows them.
+
+Fix: also strip all `a=ssrc:` lines from the SDP before `setRemoteDescription`. For a `recvonly` video stream, SSRC info is not required — Chrome learns the incoming SSRC from the first RTP packet automatically.
+
+---
+
 ### Brand Screen plugin v1.3.54 — 2026-05-01
 
 **Fix: SRS WHEP answer rejected by Chrome — session-level a=candidate**

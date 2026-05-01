@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.54",
+    "version":  "1.3.55",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3343,7 +3343,11 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
                   _cands.push({candidate:_ln.slice(2),
                                sdpMid:(_curMIdx<0?_firstMid:(_curMid||_firstMid)),
                                sdpMLineIndex:Math.max(0,_curMIdx)});
-                } else if(!_ln.startsWith('a=end-of-candidates')){
+                } else if(_ln.startsWith('a=end-of-candidates')||_ln.startsWith('a=ssrc:')){
+                  /* strip — candidates added via addIceCandidate;
+                     a=ssrc not required for recvonly (Chrome learns from RTP);
+                     SRS sometimes puts audio SSRCs in video section → Chrome rejects */
+                } else {
                   _filtered.push(_ln);
                 }
               }
