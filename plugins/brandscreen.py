@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.66",
+    "version":  "1.3.67",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3289,14 +3289,28 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
         setTimeout(function(){
           if(!pc||pc.connectionState!=='connected') return;
           pc.getStats().then(function(stats){
+            var _pairs={};
+            stats.forEach(function(r){
+              if(r.type==='candidate-pair') _pairs[r.id]=r;
+            });
             stats.forEach(function(r){
               if(r.type==='inbound-rtp'&&r.kind==='video'){
                 console.log('[BS-video] inbound-rtp: bytesRx='+r.bytesReceived+
                   ' pktsRx='+r.packetsReceived+' pktLost='+r.packetsLost+
-                  ' framesDecoded='+r.framesDecoded+' framesDropped='+r.framesDropped);
+                  ' framesDecoded='+(r.framesDecoded||0)+
+                  ' framesDropped='+(r.framesDropped||0));
+              }
+              if(r.type==='candidate-pair'&&r.nominated){
+                console.log('[BS-video] ICE pair: local='+r.localCandidateId+
+                  ' remote='+r.remoteCandidateId+' state='+r.state+
+                  ' bytesSent='+r.bytesSent+' bytesRx='+r.bytesReceived);
+              }
+              if(r.type==='local-candidate'||r.type==='remote-candidate'){
+                console.log('[BS-video] '+r.type+' '+r.id+': '+r.protocol+
+                  ' '+r.address+':'+r.port+' '+r.candidateType);
               }
             });
-          }).catch(function(){});
+          }).catch(function(e){console.warn('[BS-video] getStats err:',e);});
         }, 5000);
       }
       if(_cs==='failed'||_cs==='disconnected'){

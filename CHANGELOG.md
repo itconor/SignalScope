@@ -2,6 +2,14 @@
 
 ---
 
+### Brand Screen plugin v1.3.67 — 2026-05-01
+
+**Diagnostic: ICE candidate pair + local/remote address logging in getStats**
+
+Enhanced getStats output to include nominated ICE candidate pair (local/remote address, bytes sent/received) and individual local/remote candidate details. This reveals the exact IPs Chrome and SRS are using, allowing us to confirm whether SRTP packets are travelling the expected path.
+
+---
+
 ### Brand Screen plugin v1.3.66 — 2026-05-01
 
 **Diagnostic: getStats() + track mute/unmute events to isolate no-video cause**
