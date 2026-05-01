@@ -2,6 +2,14 @@
 
 ---
 
+### Brand Screen plugin v1.3.65 — 2026-05-01
+
+**Fix: explicit `.play()` call + video element diagnostics**
+
+WebRTC connected (`connectionState=connected`) and `ontrack` fired, but no video displayed. Chrome sometimes does not honour the `autoplay` attribute when `srcObject` is set programmatically — an explicit `.play()` call is required. Added `_bvEl.play()` in the `ontrack` handler. Also added `onloadedmetadata`, `onloadeddata`, `onerror`, `onstalled`, `onwaiting` event handlers to the video element for diagnostics, and extended `ontrack` logging to include track kind/readyState.
+
+---
+
 ### Brand Screen plugin v1.3.64 — 2026-05-01
 
 **Fix: WebRTC video — synthetic answer approach to bypass Chrome answer-validation strictness**

@@ -15,7 +15,7 @@ SIGNALSCOPE_PLUGIN = {
     "url":      "/hub/brandscreen",
     "icon":     "📺",
     "hub_only": True,
-    "version":  "1.3.64",
+    "version":  "1.3.65",
 }
 
 _BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -3239,7 +3239,16 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
     if(_bvPc){ try{_bvPc.close();}catch(e){} _bvPc=null; }
   }
 
-  console.log('[BS-video] bg_style=video, videoUrl='+_videoUrl+', token='+(!!_kioskToken));
+  console.log('[BS-video] bg_style=video el='+!!_bvEl+' videoUrl='+_videoUrl+' token='+(!!_kioskToken));
+  if(_bvEl){
+    _bvEl.onloadedmetadata=function(){
+      console.log('[BS-video] loadedmetadata '+_bvEl.videoWidth+'x'+_bvEl.videoHeight);
+    };
+    _bvEl.onloadeddata=function(){ console.log('[BS-video] first frame decoded'); };
+    _bvEl.onerror=function(){ console.warn('[BS-video] video error code='+(_bvEl.error&&_bvEl.error.code)); };
+    _bvEl.onstalled=function(){ console.warn('[BS-video] video stalled'); };
+    _bvEl.onwaiting=function(){ console.log('[BS-video] video waiting for data'); };
+  }
 
   function _bvConnect(){
     _bvCleanup();
@@ -3249,11 +3258,19 @@ if(_bgStyle==='video' && _videoUrl && _hasStation && !_fsLogo){
     pc.addTransceiver('video',{direction:'recvonly'});
 
     pc.ontrack=function(evt){
-      console.log('[BS-video] ontrack fired, streams='+evt.streams.length);
+      var _tr=evt.track;
+      console.log('[BS-video] ontrack kind='+_tr.kind+' state='+_tr.readyState+
+                  ' streams='+evt.streams.length+' el='+!!_bvEl);
       if(_bvEl && evt.streams && evt.streams[0]){
         _bvEl.srcObject=evt.streams[0];
         _bvEl.style.display='block';
+        // Explicit play() — browsers may not honour autoplay without user gesture
+        _bvEl.play().catch(function(e){ console.warn('[BS-video] play() rejected:',e.name,e.message); });
+        console.log('[BS-video] srcObject set, play() called');
         _bvFailed=false;
+      } else {
+        console.warn('[BS-video] ontrack condition failed: el='+!!_bvEl+
+                     ' streams='+evt.streams.length);
       }
     };
 
