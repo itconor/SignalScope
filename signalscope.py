@@ -2613,7 +2613,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.195"
+BUILD                  = "SignalScope-3.5.196"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -13832,22 +13832,30 @@ class HubClient:
             if inp._sla_monitored_s:
                 total = inp._sla_monitored_s + inp._sla_alert_s
                 sla_pct = round(inp._sla_monitored_s / max(total, 1) * 100, 3)
-            # Only include level values once the monitoring loop has actually
-            # processed audio (_has_real_level=True).  Until then, send None so
-            # the hub ingest path does NOT overwrite the last-known values that
-            # were restored from hub_state.json on restart — mirrors the same
-            # guard in _live_loop that protects the 5 Hz live-push path.
+            # Level semantics:
+            #   _has_real_level=True              → send the real measured value
+            #   _has_real_level=False, running    → send None  (reconnecting;
+            #                                        ingest() preserves last-known
+            #                                        value until audio flows again)
+            #   _has_real_level=False, !running   → send -120.0 explicitly
+            #                                        (monitoring stopped; ingest()
+            #                                        WILL update — hub shows zero)
+            # This ensures the two "no data" states are distinguishable:
+            #   None     = hold last value (brief reconnect gap)
+            #   -120.0   = clear bars (operator pressed Stop)
             _has_lvl   = inp._has_real_level
             _is_stereo = inp._audio_channels == 2
+            _mon_on    = mon.is_running()
+            _lvl_none  = None if _mon_on else -120.0  # None → preserve; -120 → clear
             streams.append({
                 "_client_idx":       _client_idx,   # original cfg.inputs position — survives hub-side sorting
                 "name":              inp.name,
                 "enabled":           inp.enabled,
                 "device_index":      inp.device_index,
-                "level_dbfs":        round(inp._last_level_dbfs, 1) if _has_lvl else None,
-                "peak_dbfs":         round(inp._last_peak_dbfs, 1)  if _has_lvl else None,
-                "level_dbfs_l":      round(inp._level_dbfs_l, 1) if (_has_lvl and _is_stereo) else None,
-                "level_dbfs_r":      round(inp._level_dbfs_r, 1) if (_has_lvl and _is_stereo) else None,
+                "level_dbfs":        round(inp._last_level_dbfs, 1) if _has_lvl else _lvl_none,
+                "peak_dbfs":         round(inp._last_peak_dbfs, 1)  if _has_lvl else _lvl_none,
+                "level_dbfs_l":      round(inp._level_dbfs_l, 1) if (_has_lvl and _is_stereo) else _lvl_none,
+                "level_dbfs_r":      round(inp._level_dbfs_r, 1) if (_has_lvl and _is_stereo) else _lvl_none,
                 "stereo":            inp.stereo,
                 "silence_threshold_dbfs": inp.silence_threshold_dbfs,
                 "silence_active":    bool(inp._silence_secs >= inp.silence_min_duration),

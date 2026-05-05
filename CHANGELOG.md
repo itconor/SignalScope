@@ -2,6 +2,20 @@
 
 ---
 
+### SignalScope-3.5.196 — 2026-05-05
+
+**Fix: hub shows stale level bars after monitoring is stopped**
+
+When a client stopped its monitoring loop, the hub dashboard continued showing the last measured levels frozen in place. Root cause: `ingest()` preserved level values from the previous heartbeat whenever the incoming heartbeat sent `None` for levels — this was the intended behaviour for reconnect gaps (so bars don't flash to zero during a brief stream dropout). But `None` was also sent when monitoring was deliberately stopped, so `ingest()` could not distinguish "reconnecting — hold last value" from "stopped — clear bars".
+
+Fix: `_build_payload()` now distinguishes the two states:
+- `level_dbfs = None` — monitor running but no real measurement yet (reconnecting). `ingest()` preserves last known value. No visible change.
+- `level_dbfs = -120.0` — monitor stopped (`is_running()=False`). `ingest()` updates to -120 (explicit non-None value bypasses the preserve-on-None guard). Hub bars drop to bottom within one heartbeat interval (~10 s).
+
+The `-120.0` explicit value also flows through `hub_live_levels` correctly — the existing `is not None` filter already passes it, so the 150 ms bar-update poll reflects the stopped state too.
+
+---
+
 ### SignalScope-3.5.195 — 2026-05-05
 
 **Remove "Both" hub mode — hub or client only**
