@@ -32,7 +32,7 @@ SIGNALSCOPE_PLUGIN = {
     "label":   "vMix Caller",
     "url":     "/hub/vmixcaller",
     "icon":    "📹",
-    "version": "1.8.2",
+    "version": "1.8.3",
 }
 
 import os
@@ -1386,8 +1386,8 @@ def _start_client_thread(monitor, hub_url: str):
                 except Exception:
                     pass
 
-        except Exception:
-            pass
+        except Exception as _poll_exc:
+            monitor.log("warning", f"[vmixcaller] client poll error: {_poll_exc}")
 
         time.sleep(3)
 
@@ -1790,6 +1790,24 @@ function sendCmd(fn, value){
 
 // ── Call state ────────────────────────────────────────────────────────────────
 var _inMeeting=false,_selfMuted=false;
+
+// Pending-join tracking — set when a ZoomJoinMeeting command is queued (hub
+// mode).  The seq echoed by the server ties the queued command to its
+// cmd_result so we only call setMeetingState(true) once vMix has actually
+// executed the join, not merely queued it.
+var _pendingJoinSeq=0,_pendingJoinTimer=null;
+function _joinPending(seq){
+  _pendingJoinSeq=seq;
+  clearTimeout(_pendingJoinTimer);
+  _pendingJoinTimer=setTimeout(function(){
+    if(_pendingJoinSeq===seq){
+      _pendingJoinSeq=0;
+      showMsg('Join timed out — no response from vMix after 15 s',false);
+    }
+  },15000);
+}
+function _joinResolved(){_pendingJoinSeq=0;clearTimeout(_pendingJoinTimer);_pendingJoinTimer=null;}
+
 function setMeetingState(v){
   _inMeeting=v;
   document.querySelectorAll('.meeting-card').forEach(function(c){c.className=v?'card meeting-card in-meeting':'card meeting-card';});
@@ -1802,6 +1820,8 @@ function resetCallBtns(){
 
 // vMix API: ZoomJoinMeeting Value = "MeetingID,Password" (comma-separated).
 // Display name is set by the Zoom account inside vMix, not via API.
+// NOTE: omit the trailing comma when there is no password — some vMix builds
+// reject "MeetingID," with a silent error, causing the join to fail.
 var _lastJoin={mid:'',pass:''};
 function joinWith(mid,pass){
   // Strip spaces — users often copy meeting IDs as "123 456 7890"
@@ -1809,14 +1829,23 @@ function joinWith(mid,pass){
   if(!mid){showMsg('Enter a Meeting ID',false);return;}
   _lastJoin={mid:mid,pass:pass||''};
   if(typeof _updateReconnectBtn==='function')_updateReconnectBtn();
-  sendCmd('ZoomJoinMeeting',mid+','+(pass||''))
+  // Only include the comma+password when a password was actually provided.
+  var cmdValue=pass?mid+','+pass:mid;
+  sendCmd('ZoomJoinMeeting',cmdValue)
     .then(function(d){
-      if(d.ok){
-        // If vMix returned a non-empty body it may be a silent error — show it
+      if(!d.ok)return;
+      if(d.seq){
+        // Hub mode: command was queued — show pending state and arm the 15 s
+        // timeout.  setMeetingState(true) fires only once cmd_result arrives
+        // in the state poll confirming vMix actually executed the join.
+        showMsg('Joining…',true);
+        _joinPending(d.seq);
+      } else {
+        // Standalone mode: vMix executed directly — d.response is the real result.
         var vr=(d.response||'').trim();
         var isErr=vr&&(vr.toLowerCase().indexOf('error')>=0||vr.toLowerCase().indexOf('false')>=0);
         showMsg(vr||'Joining…',!isErr);
-        setMeetingState(true);
+        if(!isErr)setMeetingState(true);
       }
     });
 }
@@ -1830,8 +1859,13 @@ function leaveMeeting(){
 function reconnect(){
   if(!_lastJoin.mid){showMsg('No previous meeting to reconnect to',false);return;}
   showMsg('Reconnecting\u2026',true);
-  sendCmd('ZoomJoinMeeting',_lastJoin.mid+','+_lastJoin.pass)
-    .then(function(d){if(d.ok)setMeetingState(true);});
+  var cmdValue=_lastJoin.pass?_lastJoin.mid+','+_lastJoin.pass:_lastJoin.mid;
+  sendCmd('ZoomJoinMeeting',cmdValue)
+    .then(function(d){
+      if(!d.ok)return;
+      if(d.seq)_joinPending(d.seq);
+      else setMeetingState(true);
+    });
 }
 function muteSelf(){
   // ZoomMuteSelf mutes; ZoomUnMuteSelf unmutes (separate official API functions)
@@ -3240,6 +3274,18 @@ function loadState(){
       if(_relayOn&&d.relay_active&&!_relayLive){
         _relayLive=true;
         updateRelayCtrl();
+      }
+      // Resolve a pending join once vMix confirms execution (hub mode).
+      // cmd_result is POSTed by the client immediately after calling the vMix
+      // API — seq matches the value we echoed from /api/vmixcaller/function.
+      if(d.cmd_result&&_pendingJoinSeq&&d.cmd_result.seq===_pendingJoinSeq){
+        _joinResolved();
+        if(d.cmd_result.ok){
+          showMsg(d.cmd_result.resp||'Joined meeting',true);
+          setMeetingState(true);
+        } else {
+          showMsg('vMix error: '+(d.cmd_result.resp||'Unknown error'),false);
+        }
       }
     }).catch(function(){setStatus('off','State poll failed',0);});
   _statePollT=setTimeout(loadState,4000);
@@ -4678,6 +4724,7 @@ def register(app, ctx):
                             "error":    resp if not ok else None})
         if not target_site:
             return jsonify({"ok": False, "error": "No target site selected — save settings first"}), 400
+        _seq = int(time.time() * 1000)
         with _state_lock:
             _pending_cmd[target_site] = {
                 "fn":     fn,
@@ -4685,9 +4732,9 @@ def register(app, ctx):
                 "value2": value2,
                 "value3": value3,
                 "input":  data.get("input") or cfg.get("vmix_input", 1),
-                "seq":    int(time.time() * 1000),
+                "seq":    _seq,
             }
-        return jsonify({"ok": True, "queued_for": target_site})
+        return jsonify({"ok": True, "queued_for": target_site, "seq": _seq})
 
     # ── Client polls for pending command ──────────────────────────────────────
     # NOT decorated with @login_required — client polls from a background thread
@@ -4758,7 +4805,12 @@ def register(app, ctx):
         data["ts"]       = data.get("ts") or time.time()
         data["has_data"] = True
         with _state_lock:
-            _site_status[site] = data
+            # Merge rather than replace so a cmd_result-only POST (sent immediately
+            # after command execution) does not wipe participants/version/srs data
+            # that won't be re-sent until the next full 12 s report.
+            existing = dict(_site_status.get(site, {}))
+            existing.update(data)
+            _site_status[site] = existing
         return jsonify({"ok": True})
 
     # ── Hub browser polls latest client status ────────────────────────────────

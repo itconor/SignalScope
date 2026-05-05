@@ -2,6 +2,26 @@
 
 ---
 
+### vMix Caller plugin v1.8.3 — 2026-05-02
+
+**Fix: ZoomJoinMeeting never actually joined in hub mode**
+
+Five compounding bugs caused every join attempt from the hub page to silently fail or show the wrong state:
+
+1. **Trailing comma with no password** — `joinWith` built the vMix value as `"MeetingID,"` (trailing comma) when no password was supplied. Some vMix builds silently reject this. Fixed: value is now `mid` alone when `pass` is empty, `mid+','+pass` only when a password is provided. Same fix applied to `reconnect`.
+
+2. **`setMeetingState(true)` fired on queue confirmation, not vMix execution** — The `.then()` callback in `joinWith` ran as soon as the command was queued on the hub (`{ok:true, queued_for: site}`), not after vMix processed it. The meeting card flipped to "in-meeting" instantly even if vMix never received the command. Fixed: hub-mode join now shows "Joining…" and arms a 15-second timeout via `_joinPending(seq)`.
+
+3. **`d.response` check was dead code** — The queued response never has a `response` field; the error check `vr.indexOf('error')>=0` always evaluated on an empty string and was never triggered.
+
+4. **`cmd_result` from the client was ignored by the browser** — The client POSTs the actual vMix API response back to the hub immediately after execution (`{cmd_result:{seq,ok,resp}}`), but `loadState()` never read `d.cmd_result`. Fixed: `loadState()` now checks for a `cmd_result` whose `seq` matches `_pendingJoinSeq` and calls `setMeetingState(true)` (or shows the vMix error) only then.
+
+5. **`cmd_result`-only POST wiped all state** — `vmixcaller_report()` replaced `_site_status[site]` entirely, so a `cmd_result`-only POST (sent right after command execution) obliterated participants, version, and SRS data until the next full 12 s report. Fixed: report now merges into existing status (`existing.update(data)`).
+
+Also: outer poll-loop exception now logged as a warning instead of silently swallowed.
+
+---
+
 ### Brand Screen plugin v1.3.71 — 2026-05-01
 
 **Fix: direct WHEP path causing instant reconnect loop**
