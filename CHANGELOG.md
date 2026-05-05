@@ -2,6 +2,24 @@
 
 ---
 
+### SignalScope-3.5.197 — 2026-05-05
+
+**Fix: hub page slow to load / live levels delayed on hubs with large history**
+
+Two compounding issues caused the hub page to be slow to render and live level bars to take minutes to start animating on deployments with many sites and long-running history.
+
+**1. `_alert_log_load` read the entire `alert_log.json` on every hub page load.**
+The file grows indefinitely — a busy hub with many sites can accumulate hundreds of MB after months of operation. Every `/hub` page request was reading the whole file into memory (holding `_alert_log_lock` the entire time) just to take the last 500 lines.
+
+Fix: tail-read the file. Start from `file_size – limit × 600 bytes`, doubling the window if there aren't enough lines. For a 100 MB log, this reads ~300 KB instead of 100 MB — roughly 300× faster.
+
+**2. `render_template_string(HUB_TPL, ...)` recompiled the 2,000-line template on every request.**
+Jinja2's `from_string()` has no bytecode cache — it parses and compiles the template source to Python bytecode on every call. On low-power hardware this adds several seconds of pure CPU overhead per page load.
+
+Fix: compile HUB_TPL and HUB_WALL_TPL once (on first request) and cache the compiled `jinja2.Template` object in `_hub_tpl_cache` / `_hub_wall_cache`. Subsequent loads skip compilation entirely and go straight to template execution.
+
+---
+
 ### SignalScope-3.5.196 — 2026-05-05
 
 **Fix: hub shows stale level bars after monitoring is stopped**

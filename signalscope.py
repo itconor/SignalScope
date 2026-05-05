@@ -2613,7 +2613,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.196"
+BUILD                  = "SignalScope-3.5.197"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -4095,15 +4095,37 @@ def _check_site_health_alerts(site: str, system: dict):
 
 
 def _alert_log_load(limit: int = 2000) -> List[dict]:
-    """Read the last `limit` events from the alert log."""
+    """Read the last `limit` events from the alert log.
+
+    Reads from the tail of the file rather than loading the whole thing —
+    alert_log.json grows indefinitely and can reach hundreds of MB on busy
+    hubs; slurping it on every /hub page load was the primary cause of
+    slow initial render and live-level update delays.
+    """
     if not os.path.exists(ALERT_LOG_PATH):
         return []
     try:
+        # Estimate ~600 bytes per JSON event; double the read window until we
+        # have enough lines, or until we've read the whole file.
+        chunk_bytes = max(limit * 600, 65536)
         with _alert_log_lock:
-            with open(ALERT_LOG_PATH, "r", encoding="utf-8") as f:
-                lines = f.readlines()
+            with open(ALERT_LOG_PATH, "rb") as f:
+                f.seek(0, 2)
+                total = f.tell()
+                chunk_bytes = min(chunk_bytes, total)
+                while True:
+                    f.seek(max(0, total - chunk_bytes))
+                    raw = f.read()
+                    raw_lines = raw.splitlines()
+                    # If we didn't start at offset 0 the first line may be partial;
+                    # discard it so we only parse complete lines.
+                    if total - chunk_bytes > 0 and raw_lines:
+                        raw_lines = raw_lines[1:]
+                    if len(raw_lines) >= limit or chunk_bytes >= total:
+                        break
+                    chunk_bytes = min(total, chunk_bytes * 2)
         events = []
-        for line in lines[-limit:]:
+        for line in raw_lines[-limit:]:
             line = line.strip()
             if line:
                 try: events.append(json.loads(line))
@@ -28785,6 +28807,36 @@ def hub_site_ping_result(site_name):
     return jsonify({"ready": True, **result})
 
 
+# ── Compiled-template cache — render_template_string() recompiles from_string()
+# on every call (no bytecode cache for string templates in Jinja2).  For large
+# templates like HUB_TPL (2 000+ lines) this adds a noticeable per-request
+# overhead on low-power hardware.  Cache the compiled Template object at first
+# use so subsequent loads only pay for Jinja2 execution, not compilation.
+_hub_tpl_cache:  "jinja2.Template | None" = None
+_hub_wall_cache: "jinja2.Template | None" = None
+_hub_tpl_lock = threading.Lock()
+
+def _render_hub(tpl_src: str, cache_slot: str, **ctx):
+    """Compile `tpl_src` once and cache the result; render with `ctx`."""
+    global _hub_tpl_cache, _hub_wall_cache
+    slot = "_hub_tpl_cache" if cache_slot == "main" else "_hub_wall_cache"
+    compiled = globals()[slot]
+    if compiled is None:
+        with _hub_tpl_lock:
+            compiled = globals()[slot]   # re-check under lock
+            if compiled is None:
+                from flask import current_app as _ca
+                compiled = _ca.jinja_env.from_string(tpl_src)
+                globals()[slot] = compiled
+    # Flask's render_template_string also calls update_template_context() to
+    # inject request/session/g/config/url_for etc. Mirror that here.
+    from flask import current_app as _ca, request as _req, session as _sess, g as _g
+    full_ctx = dict(_ca.jinja_env.globals)
+    _ca.update_template_context(full_ctx)
+    full_ctx.update(ctx)
+    return compiled.render(full_ctx)
+
+
 @app.get("/hub")
 @login_required
 def hub_dashboard():
@@ -28914,10 +28966,12 @@ def hub_dashboard():
                 wall_chains.append(hub_server.eval_chain(chain))
             except Exception:
                 pass
-        return render_template_string(HUB_WALL_TPL, sites=sites, chains=wall_chains,
+        return _render_hub(HUB_WALL_TPL, "wall",
+            sites=sites, chains=wall_chains,
             build=BUILD, now=time.time(), csp_nonce=_csp_nonce)
 
-    return render_template_string(HUB_TPL, sites=sites, build=BUILD, now=time.time(),
+    return _render_hub(HUB_TPL, "main",
+        sites=sites, build=BUILD, now=time.time(),
         mode_both=False, ago=_ago, fmt=_fmt,
         aiClass=_ai_class, rtpClass=_rtp_class,
         wall_mode=wall_mode, problems_only=problems_only,
