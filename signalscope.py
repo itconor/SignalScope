@@ -547,7 +547,6 @@ document.addEventListener('DOMContentLoaded',function(){
                     style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
               <option value="client" {{'selected' if cfg.hub.mode=='client'}}>Client — this site sends data to a central hub</option>
               <option value="hub"    {{'selected' if cfg.hub.mode=='hub'}}>Hub — this machine receives data from all sites</option>
-              <option value="both"   {{'selected' if cfg.hub.mode=='both'}}>Both — client + hub on this machine</option>
             </select>
           </label>
         
@@ -734,8 +733,8 @@ document.addEventListener('DOMContentLoaded',function(){
             var mode = document.getElementById('hub_mode_sel').value;
             var cp = document.getElementById('hub_client_panel');
             var sp = document.getElementById('hub_server_panel');
-            cp.style.display = (mode==='client'||mode==='both') ? '' : 'none';
-            sp.style.display = (mode==='hub'   ||mode==='both') ? '' : 'none';
+            cp.style.display = (mode==='client') ? '' : 'none';
+            sp.style.display = (mode==='hub') ? '' : 'none';
           }
           document.addEventListener('DOMContentLoaded', updateHubPanels);
           // Disable inputs inside hidden panels before submit so duplicate fields
@@ -802,7 +801,6 @@ document.addEventListener('DOMContentLoaded',function(){
                     style="width:100%;margin-top:4px;padding:8px 10px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx);font-size:14px">
               <option value="client" {{'selected' if cfg.hub.mode=='client'}}>Client — this site sends data to a central hub</option>
               <option value="hub"    {{'selected' if cfg.hub.mode=='hub'}}>Hub — this machine receives data from all sites</option>
-              <option value="both"   {{'selected' if cfg.hub.mode=='both'}}>Both — client + hub on this machine</option>
             </select>
           </label>
         
@@ -989,8 +987,8 @@ document.addEventListener('DOMContentLoaded',function(){
             var mode = document.getElementById('hub_mode_sel').value;
             var cp = document.getElementById('hub_client_panel');
             var sp = document.getElementById('hub_server_panel');
-            cp.style.display = (mode==='client'||mode==='both') ? '' : 'none';
-            sp.style.display = (mode==='hub'   ||mode==='both') ? '' : 'none';
+            cp.style.display = (mode==='client') ? '' : 'none';
+            sp.style.display = (mode==='hub') ? '' : 'none';
           }
           document.addEventListener('DOMContentLoaded', updateHubPanels);
           // Disable inputs inside hidden panels before submit so duplicate fields
@@ -2615,7 +2613,7 @@ def _try_import(name):
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-BUILD                  = "SignalScope-3.5.194"
+BUILD                  = "SignalScope-3.5.195"
 
 def _is_raspberry_pi() -> bool:
     """Return True if this machine is a Raspberry Pi."""
@@ -3331,7 +3329,7 @@ class NetworkConfig:
 
 @dataclass
 class HubConfig:
-    mode:             str  = "client"  # "client" | "hub" | "both"
+    mode:             str  = "client"  # "client" | "hub"
     site_name:        str  = ""        # shown on hub dashboard (client mode)
     hub_url:          str  = ""        # e.g. http://1.2.3.4:5001  (client mode)
     secret_key:       str  = ""        # shared secret (both sides must match)
@@ -3556,7 +3554,8 @@ def load_config() -> AppConfig:
             server_bind_host=n.get("server_bind_host","0.0.0.0"),
         ),
         hub=HubConfig(
-            mode=h.get("mode","client"), site_name=h.get("site_name",""),
+            mode={"client":"client","hub":"hub","both":"hub"}.get(h.get("mode","client"),"client"),
+            site_name=h.get("site_name",""),
             hub_url=h.get("hub_url",""), secret_key=h.get("secret_key",""),
             enabled=h.get("enabled",False),
             relay_bitrate=int(h.get("relay_bitrate", 128)),
@@ -6348,7 +6347,7 @@ def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0,
     # Auto-queue for hub upload unless the caller (e.g. _cmd_save_clip) will
     # handle the upload itself to avoid sending the same clip twice.
     #
-    # In "hub" / "both" mode the clip is already on the hub's filesystem — any
+    # In hub mode the clip is already on the hub's filesystem — any
     # HTTP upload is a pointless loopback round-trip that also causes
     # double-storage (alert_snippets/<stream>/ AND alert_snippets/<site>_<stream>/)
     # and confuses _sync_pending_clips.  Skip the queue in those modes AND
@@ -6360,7 +6359,7 @@ def _save_alert_wav(cfg: InputConfig, label: str, duration: float = 5.0,
         _hub_cfg = None
         _mode    = "standalone"
 
-    if _mode in ("hub", "both"):
+    if _mode == "hub":
         # File lives on the same machine as the hub — mark it so
         # _sync_pending_clips never tries to upload it.
         try:
@@ -8988,7 +8987,7 @@ class MonitorManager:
         started with the current configuration.
         """
         cfg = self.app_cfg
-        if cfg.hub.mode in ("client", "both") and cfg.hub.hub_url:
+        if cfg.hub.mode == "client" and cfg.hub.hub_url:
             # Check if the running client is already pointing at the right URL
             if self._hub_client is not None:
                 if getattr(self._hub_client, '_hub_url_at_start', None) == cfg.hub.hub_url:
@@ -9107,7 +9106,7 @@ class MonitorManager:
             # subsequent FM start to fail with "already in use".
             sdr_manager.release_all()
             self._running=False; self.log("[Monitor] Stopped.")
-            # Auto-maintenance for local chain nodes (hub-as-both mode).
+            # Auto-maintenance for local chain nodes (hub mode).
             # Prevents the chain monitor from firing CHAIN_FAULT alerts while
             # monitoring is intentionally stopped on this machine.
             # Cancel any pending 60s clear timer from a previous start cycle.
@@ -12801,11 +12800,11 @@ class HubClient:
                             f"Buffer length: "
                             f"{len(_inp._audio_buffer) if hasattr(_inp,'_audio_buffer') else 'N/A'}")
                 return
-            # In "hub"/"both" mode the clip is already on the hub's own
+            # In hub mode the clip is already on the hub's own
             # filesystem — any HTTP upload is a pointless loopback.
             # _save_alert_wav already wrote a .hub marker above so the
             # periodic sync loop ignores it; nothing else to do.
-            if _cfg.hub.mode in ("hub", "both"):
+            if _cfg.hub.mode == "hub":
                 monitor.log(f"[Hub] save_clip: local node is hub — upload skipped "
                             f"({os.path.basename(clip_path)})")
             elif _cfg.hub.clip_auto_upload:
@@ -12985,7 +12984,7 @@ class HubClient:
             return
         if getattr(self, "_low_bw", False) or getattr(cfg_obj.hub, "low_bw", False):
             return
-        if cfg_obj.hub.mode not in ("client", "both"):
+        if cfg_obj.hub.mode != "client":
             return
         hub_url = cfg_obj.hub.hub_url.rstrip("/")
         if not hub_url:
@@ -13962,7 +13961,7 @@ class HubClient:
                     mgmt_ip = _s.getsockname()[0]
             except Exception:
                 mgmt_ip = socket.gethostname()
-        my_port = 5000  # client always listens on 5000 in client/both mode
+        my_port = 5000  # client always listens on 5000 in client mode
         return {
             "api":         HUB_API_VERSION,
             "site":        cfg.hub.site_name or socket.gethostname(),
@@ -14869,11 +14868,11 @@ class HubClient:
                 # delivered on-demand via the relay when viewed in Reports.
                 _eff_low_bw = getattr(self, '_low_bw', False) or getattr(cfg.hub, 'low_bw', False)
                 _cq = getattr(monitor, "_hub_clip_queue", None)
-                # In "hub"/"both" mode the clip is already on the hub filesystem —
+                # In hub mode the clip is already on the hub filesystem —
                 # skip the loopback upload drain entirely.  (_save_alert_wav no
                 # longer enqueues in these modes, but drain defensively in case
                 # older entries are still in the queue after a config change.)
-                if _cq and cfg.hub.mode in ("hub", "both"):
+                if _cq and cfg.hub.mode == "hub":
                     try:
                         while True:
                             _cq.get_nowait()
@@ -19069,7 +19068,7 @@ def _inject_nav():
         import html as _html
         from flask import session
         _esc = _html.escape
-        show_hub    = mode in ("hub", "both")
+        show_hub    = mode == "hub"
         hub_only    = (mode == "hub")
         csrf        = _csrf_token()
         nonce       = _csp_nonce()
@@ -21677,7 +21676,6 @@ kill %1<button class="copy-btn" onclick="copyCmd(this)">Copy</button></div>
             style="width:100%;margin-top:4px;padding:9px 11px;background:#173a69;border:1px solid var(--bor);border-radius:6px;color:var(--tx)">
       <option value="client" {{'selected' if cfg.hub.mode=='client'}}>Client — this site sends data to a central hub</option>
       <option value="hub"    {{'selected' if cfg.hub.mode=='hub'}}>Hub — this machine receives data from all sites</option>
-      <option value="both"   {{'selected' if cfg.hub.mode=='both'}}>Both — client + hub on this machine</option>
     </select>
   </label>
 
@@ -21700,7 +21698,7 @@ kill %1<button class="copy-btn" onclick="copyCmd(this)">Copy</button></div>
     var el = document.getElementById('wiz_hub_mode');
     if(!el) return;
     document.getElementById('wiz_hub_url_wrap').style.display =
-      (el.value==='client' || el.value==='both') ? '' : 'none';
+      (el.value==='client') ? '' : 'none';
   }
   wizModeChanged();
   </script>
@@ -21767,7 +21765,7 @@ kill %1<button class="copy-btn" onclick="copyCmd(this)">Copy</button></div>
         <div style="font-size:12px;color:var(--mu)">Click ▶ Start on the dashboard. The AI needs 24 hours to learn each stream's normal baseline before anomaly alerts are active.</div>
       </div>
     </div>
-    {% if cfg.hub.mode in ('hub','both') %}
+    {% if cfg.hub.mode == 'hub' %}
     <div style="padding:14px;background:var(--sur);border:1px solid var(--bor);border-radius:8px;display:flex;gap:14px;align-items:flex-start">
       <span style="font-size:22px;flex-shrink:0">5️⃣</span>
       <div>
@@ -23599,7 +23597,7 @@ def about_page():
     else:
         uptime = f"{m}m"
     mode_map = {"hub": "Hub only", "client": "Client only",
-                "both": "Hub + Client", "standalone": "Standalone"}
+                "standalone": "Standalone"}
     mode = (cfg.hub.mode if cfg.hub else "standalone") or "standalone"
     mode_label = mode_map.get(mode, mode.title())
     site_name = (cfg.hub.site_name or socket.gethostname()) if cfg.hub else socket.gethostname()
@@ -23651,7 +23649,7 @@ def index():
         running=monitor.is_running(), inputs=list(enumerate(monitor.app_cfg.inputs)),
         log_text="\n".join(monitor.get_logs(150)),
         now=time.time(), learn_dur=LEARN_DURATION_SECONDS,
-        hub_client_enabled=bool(hub_cfg.hub_url and hub_cfg.mode in ("client","both")),
+        hub_client_enabled=bool(hub_cfg.hub_url and hub_cfg.mode == "client"),
         hub_url=hub_cfg.hub_url,
         _acked_ids=_acked_ids)
 
@@ -23765,7 +23763,7 @@ def status_json():
     hc = monitor._hub_client
     hub_status = {
         "enabled":    bool(monitor.app_cfg.hub.hub_url and
-                          monitor.app_cfg.hub.mode in ("client","both")),
+                          monitor.app_cfg.hub.mode == "client"),
         "state":      hc.state      if hc else "disabled",
         "last_ack":   hc.last_ack   if hc else 0,
         "last_error": hc.last_error if hc else "",
@@ -23820,7 +23818,7 @@ def hub_chain_note_ep(fault_log_id: str):
     """
     from flask import session as _sess
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub", "both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"ok": False, "error": "not a hub"}), 403
     fault_log_id = fault_log_id.strip()
     if not fault_log_id:
@@ -23863,7 +23861,7 @@ def hub_alert_feedback_ep(alert_id: str):
     """
     from flask import session as _session
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub", "both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"ok": False, "error": "not a hub"}), 403
 
     user     = _session.get("user", "admin")
@@ -27449,13 +27447,13 @@ def reports_clear():
         flash(f"Clear failed: {e}")
     return redirect(url_for("reports"))
 
-# ─── Hub API routes (active when mode == hub or both) ────────────────────────
+# ─── Hub API routes (active when mode == hub) ────────────────────────
 
 @app.post(f"/api/{HUB_API_VERSION}/heartbeat")
 def hub_heartbeat():
     cfg    = monitor.app_cfg
     secret = cfg.hub.secret_key
-    if cfg.hub.mode not in ("hub","both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"error":"not a hub"}), 404
 
     # ── Rate limiting ─────────────────────────────────────────────────────────
@@ -27752,7 +27750,7 @@ def hub_clip_upload():
     """
     cfg    = monitor.app_cfg
     secret = cfg.hub.secret_key
-    if cfg.hub.mode not in ("hub", "both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"error": "not a hub"}), 404
 
     if not secret:
@@ -28023,7 +28021,7 @@ def hub_backup_upload():
     """
     cfg    = monitor.app_cfg
     secret = cfg.hub.secret_key
-    if cfg.hub.mode not in ("hub", "both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"error": "not a hub"}), 404
 
     if not secret:
@@ -28067,7 +28065,7 @@ def hub_ping_result():
     """Receive a ping/connectivity test result uploaded from a client site."""
     cfg    = monitor.app_cfg
     secret = cfg.hub.secret_key
-    if cfg.hub.mode not in ("hub", "both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"error": "not a hub"}), 404
 
     if not secret:
@@ -28121,7 +28119,7 @@ def hub_log_data():
     """Receive an on-demand log dump uploaded from a client site."""
     cfg    = monitor.app_cfg
     secret = cfg.hub.secret_key
-    if cfg.hub.mode not in ("hub", "both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"error": "not a hub"}), 404
 
     if not secret:
@@ -28177,7 +28175,7 @@ def hub_update_download():
     """
     cfg    = monitor.app_cfg
     secret = cfg.hub.secret_key
-    if cfg.hub.mode not in ("hub", "both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"error": "not a hub"}), 404
 
     if not secret:
@@ -28258,7 +28256,7 @@ def hub_trigger_update(site_name):
          for this site are taken back out of maintenance automatically.
     """
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub", "both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"error": "not a hub"}), 403
 
     # Put all chain nodes for this site into maintenance (15-minute window
@@ -28280,7 +28278,7 @@ def hub_trigger_update(site_name):
 def hub_get_releases():
     """Fetch the list of SignalScope GitHub releases for the version selector."""
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub", "both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"error": "not a hub"}), 403
     try:
         req = urllib.request.Request(
@@ -28308,7 +28306,7 @@ def hub_get_releases():
 def hub_install_version(site_name):
     """Push an install_version command to a remote site (install any GitHub release)."""
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub", "both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"error": "not a hub"}), 403
     data = request.get_json(silent=True) or {}
     tag      = (data.get("tag") or "").strip()
@@ -28335,7 +28333,7 @@ def hub_install_version(site_name):
 def hub_set_relay_bitrate(site_name):
     """Hub admin: set the relay audio bitrate for a specific client site."""
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub", "both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"error": "not a hub"}), 403
     data = request.get_json(silent=True) or {}
     try:
@@ -28354,7 +28352,7 @@ def hub_set_relay_bitrate(site_name):
 def hub_send_command(site_name):
     """Hub admin: queue a remote start/stop command for a client site."""
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub", "both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"error": "not a hub"}), 403
     if not hub_server.get_site(site_name):
         return jsonify({"error": "site not found"}), 404
@@ -28369,7 +28367,7 @@ def hub_send_command(site_name):
 
 def _hub_site_guard(site_name: str):
     """Return (site_dict, None) or (None, error_response)."""
-    if monitor.app_cfg.hub.mode not in ("hub", "both"):
+    if monitor.app_cfg.hub.mode != "hub":
         return None, (jsonify({"error": "not a hub"}), 403)
     site = hub_server.get_site(site_name)
     if not site:
@@ -28787,8 +28785,8 @@ def hub_dashboard():
     if _pr:
         return redirect(_pr)
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub","both"):
-        return "This instance is not configured as a hub. Set mode to 'hub' or 'both' in Settings.", 404
+    if cfg.hub.mode != "hub":
+        return "This instance is not configured as a hub. Set mode to 'hub' in Settings.", 404
     hub_server.set_secret(cfg.hub.secret_key)
     wall_mode = str(request.args.get("wall", "")).strip().lower() in ("1", "true", "yes", "on")
     problems_only = str(request.args.get("problems", "")).strip().lower() in ("1", "true", "yes", "on")
@@ -28912,7 +28910,7 @@ def hub_dashboard():
             build=BUILD, now=time.time(), csp_nonce=_csp_nonce)
 
     return render_template_string(HUB_TPL, sites=sites, build=BUILD, now=time.time(),
-        mode_both=(cfg.hub.mode=="both"), ago=_ago, fmt=_fmt,
+        mode_both=False, ago=_ago, fmt=_fmt,
         aiClass=_ai_class, rtpClass=_rtp_class,
         wall_mode=wall_mode, problems_only=problems_only,
         offline_count=offline_count, alert_site_count=alert_site_count,
@@ -28984,7 +28982,7 @@ def hub_audio_chunk(slot_id):
 def hub_debug():
     """Diagnostic: show raw stored site data as JSON."""
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub","both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"error":"not a hub"}), 404
     hub_server.set_secret(cfg.hub.secret_key)
     sites = hub_server.get_sites()
@@ -29007,7 +29005,7 @@ def hub_debug():
 def hub_data():
     """JSON endpoint for hub page live refresh."""
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub","both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"error":"not a hub"}), 404
     hub_server.set_secret(cfg.hub.secret_key)
     sites = hub_server.get_sites()
@@ -29048,7 +29046,7 @@ def hub_data():
 @csrf_protect
 def hub_remove_site(site_name):
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub","both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"error":"not a hub"}), 404
     removed = False
     with hub_server._lock:
@@ -29071,7 +29069,7 @@ def hub_remove_site(site_name):
 @csrf_protect
 def hub_approve_site(site_name):
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub","both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"error":"not a hub"}), 404
     ok = hub_server.approve_site(site_name)
     return jsonify({"ok": ok, "site": site_name})
@@ -29222,7 +29220,7 @@ def hub_open_site(site_name):
     plain anchor so operators can choose to open it themselves.
     """
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub","both"):
+    if cfg.hub.mode != "hub":
         return "Not a hub", 404
     if not hub_server.get_site(site_name):
         return "Site not found", 404
@@ -29233,7 +29231,7 @@ def hub_open_site(site_name):
 def hub_site_replica(site_name):
     """Read-only hub replica page populated from the latest heartbeat state."""
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub","both"):
+    if cfg.hub.mode != "hub":
         return "Not a hub", 404
     raw_site = hub_server.get_site(site_name)
     if not raw_site:
@@ -29268,7 +29266,7 @@ def hub_site_replica(site_name):
 def hub_site_data_api(site_name):
     """JSON data endpoint polled by the hub site replica page for live updates."""
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub", "both"):
+    if cfg.hub.mode != "hub":
         return jsonify({"ok": False, "error": "Not a hub"}), 404
     raw_site = hub_server.get_site(site_name)
     if not raw_site:
@@ -29288,7 +29286,7 @@ def hub_proxy_live(site_name, sidx):
        via the next heartbeat ACK, then stream chunks the client pushes back.
     """
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub","both"):
+    if cfg.hub.mode != "hub":
         return "Not a hub", 404
     site = hub_server.get_site(site_name)
     if not site:
@@ -29344,7 +29342,7 @@ def hub_proxy_live(site_name, sidx):
 def hub_proxy_clip(site_name, sidx):
     """Proxy a WAV clip download from a client site through the hub."""
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub","both"):
+    if cfg.hub.mode != "hub":
         return "Not a hub", 404
     site = hub_server.get_site(site_name)
     if not site:
@@ -29387,7 +29385,7 @@ def hub_proxy_alert_clip(site_name, stream_filename):
         return "Invalid clip path", 404
     stream_name, filename = stream_filename.rsplit('/', 1)
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub","both"):
+    if cfg.hub.mode != "hub":
         return "Not a hub", 404
     # "(hub)" is a pseudo-site for clips recorded directly on the hub machine.
     # These are always in the local alert_snippets cache — no remote relay needed.
@@ -32079,7 +32077,7 @@ document.addEventListener('keydown', function(e){
 @login_required
 def broadcast_chains():
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub", "both"):
+    if cfg.hub.mode != "hub":
         return "Not a hub", 404
     chains    = cfg.signal_chains or []
     # Filter chains by user's allowed_chains (empty list = all chains)
@@ -33128,7 +33126,7 @@ def api_mobile_hub_overview():
     now = time.time()
     mode = cfg.hub.mode if cfg.hub else "local"
 
-    if mode not in ("hub", "both"):
+    if mode != "hub":
         return jsonify({
             "ok": True, "generated_at": now,
             "mode": mode,
@@ -33357,7 +33355,7 @@ def api_mobile_chain_note_save(fault_log_id: str):
 
     # If this is a hub and the caller specified which client site, forward it
     cfg = monitor.app_cfg
-    if site and hub_server and cfg.hub.mode in ("hub", "both"):
+    if site and hub_server and cfg.hub.mode == "hub":
         try:
             hub_server.push_pending_command(site, {
                 "type":    "chain_note",
@@ -34199,10 +34197,10 @@ def _mobile_reports_events(limit: int = 100, site: str = "", stream: str = "", e
             if not isinstance(before_value, (int, float, float)):
                 before_value = None
 
-    if cfg.hub.mode in ("hub", "both") and hub_server:
+    if cfg.hub.mode == "hub" and hub_server:
         hub_server.set_secret(cfg.hub.secret_key)
         sites = hub_server.get_sites()
-        stream_to_chains = _mobile_reports_stream_to_chains(cfg.signal_chains if cfg.hub.mode in ("hub", "both") else [])
+        stream_to_chains = _mobile_reports_stream_to_chains(cfg.signal_chains if cfg.hub.mode == "hub" else [])
         for s in sites:
             site_name = s.get("site", "?")
             if site and site != site_name:
@@ -35271,14 +35269,14 @@ def api_ab_groups_toggle(group_id):
 def hub_reports():
     """Merged alert reports from all connected sites."""
     cfg = monitor.app_cfg
-    if cfg.hub.mode not in ("hub","both"):
+    if cfg.hub.mode != "hub":
         return "Not a hub", 404
     hub_server.set_secret(cfg.hub.secret_key)
     sites = hub_server.get_sites()
 
     # Build stream→chain lookup from hub chain config
     # A stream may appear in multiple chains, so map to a list then join for display.
-    chain_cfg = cfg.signal_chains if cfg.hub.mode in ("hub","both") else []
+    chain_cfg = cfg.signal_chains if cfg.hub.mode == "hub" else []
     stream_to_chains: dict = {}   # stream_name → [chain_name, ...]
     chain_names_list: list = []
     chain_names_set:  set  = set()
@@ -35301,7 +35299,7 @@ def hub_reports():
     # This means when a client uploads a clip (hub writes the same entry_id to its
     # alert log), the hub row wins and the client recent_alerts row is suppressed.
     # The hub row is preferred because its clip URL is a direct local path, not a
-    # proxy round-trip to the client site.  In both-mode the hub is also a client —
+    # proxy round-trip to the client site.  In hub mode, client threads do not run on the hub machine —
     # its own recent_alerts rows are suppressed by seen_ids just as before.
     all_events = []
     seen_ids: set = set()
@@ -35685,7 +35683,7 @@ _pluginmgr_registry_cache = {"data": None, "ts": 0.0}
 def hub_plugin_manager():
     cfg_ss = monitor.app_cfg
     _mode  = getattr(getattr(cfg_ss, "hub", None), "mode", "standalone") or "standalone"
-    if _mode not in ("hub", "both"):
+    if _mode != "hub":
         from flask import redirect
         return redirect("/")
     return render_template_string(_HUB_PLUGINMGR_TPL)
@@ -35696,7 +35694,7 @@ def hub_plugins_data():
     """Return hub's own installed plugins + per-site lists from heartbeat data."""
     cfg_ss = monitor.app_cfg
     _mode  = getattr(getattr(cfg_ss, "hub", None), "mode", "standalone") or "standalone"
-    if _mode not in ("hub", "both"):
+    if _mode != "hub":
         return jsonify({"error": "not a hub"}), 403
     now = time.time()
     sites_out = {}
@@ -40727,7 +40725,7 @@ if __name__=="__main__":
     cfg  = monitor.app_cfg
     mode = cfg.hub.mode
 
-    if mode in ("hub", "both"):
+    if mode == "hub":
         suffix = "/hub" if mode == "hub" else "  (hub at /hub)"
         label  = "HUB" if mode == "hub" else "CLIENT+HUB"
         print(f"[{BUILD}] {label} mode — http://0.0.0.0:5000{suffix}")

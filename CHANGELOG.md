@@ -2,6 +2,21 @@
 
 ---
 
+### SignalScope-3.5.195 — 2026-05-05
+
+**Remove "Both" hub mode — hub or client only**
+
+The "hub + client" combined mode caused a number of persistent bugs (clip double-storage, sync loops, complex conditional code) and had no real-world use case — in every deployment machines are either a central hub or a studio client, never both simultaneously.
+
+Changes:
+- Settings dropdown and setup wizard now show only "Client" and "Hub" options
+- All 43 internal mode checks simplified: `mode in ("hub","both")` → `mode == "hub"`, `mode in ("client","both")` → `mode == "client"`
+- Config migration: any existing installation with `mode = "both"` automatically reads as `mode = "hub"` on first run (hub is the primary role "both" was used for)
+- `HubConfig.mode` type comment updated to `"client" | "hub"`
+- Hub API 404 error message no longer mentions "both"
+
+---
+
 ### vMix Caller plugin v1.8.3 — 2026-05-02
 
 **Fix: ZoomJoinMeeting never actually joined in hub mode**
